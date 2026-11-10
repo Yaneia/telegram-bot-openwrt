@@ -305,7 +305,7 @@ def build_bot_application():
 
     def _app_url(app_name: str, state_token: str) -> str:
         sep = "&" if "?" in WEBAPP_STATIC_URL else "?"
-        return f"{WEBAPP_STATIC_URL}{sep}app={app_name}#state={state_token}"
+        return f"{WEBAPP_STATIC_URL}{sep}app={app_name}&state={state_token}"
 
     def build_reply_keyboard_from_token(user_id: int, state_token: str) -> Optional[ReplyKeyboardMarkup]:
         if not WEBAPP_STATIC_URL.startswith("https://"):

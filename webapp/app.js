@@ -131,10 +131,51 @@
   }
 
   function extractHashStateToken() {
+    // 1. Prefer query parameter (?app=home&state=...) so location.hash stays reserved for Telegram's #tgWebAppData
+    const searchParams = new URLSearchParams(window.location.search);
+    const qState = searchParams.get("state");
+    if (qState) {
+      return qState.split("#")[0];
+    }
+
+    // 2. Fallback: support #state=... (even if Telegram appended a second #tgWebAppData=...)
     const rawHash = window.location.hash.replace(/^#/, "");
     if (!rawHash) return null;
-    const params = new URLSearchParams(rawHash);
-    return params.get("state");
+    const firstFragment = rawHash.split("#")[0];
+    const params = new URLSearchParams(firstFragment);
+    const hState = params.get("state");
+    return hState ? hState.split("#")[0] : null;
+  }
+
+  function resolveTelegramContext() {
+    let user = tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : null;
+    let platform = tg && tg.platform ? tg.platform : "unknown";
+
+    // If the URL had a double hash (#state=...#tgWebAppData=...), telegram-web-app.js might have missed tgWebAppData
+    if (!user && window.location.hash.includes("tgWebAppData=")) {
+      const segments = window.location.hash.split("#").filter(Boolean);
+      for (const seg of segments) {
+        const p = new URLSearchParams(seg);
+        if (p.get("tgWebAppPlatform") && platform === "unknown") {
+          platform = p.get("tgWebAppPlatform");
+        }
+        const rawWebAppData = p.get("tgWebAppData");
+        if (rawWebAppData) {
+          const innerParams = new URLSearchParams(rawWebAppData);
+          const userJson = innerParams.get("user");
+          if (userJson) {
+            try {
+              user = JSON.parse(userJson);
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
+    const isInsideTelegram = Boolean(
+      (user && user.id) || (platform && platform !== "unknown")
+    );
+    return { user, platform, isInsideTelegram };
   }
 
   // ---------------- Serverless Action Dispatcher ----------------
@@ -990,12 +1031,9 @@
     bindStaticEvents();
     $("refresh-btn").hidden = true;
     const initialTab = detectInitialApp();
-    const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : null;
-    const isInsideTelegram = Boolean(
-      (tgUser && tgUser.id) || (tg && tg.platform && tg.platform !== "unknown")
-    );
+    const { user: tgUser, isInsideTelegram } = resolveTelegramContext();
 
-    // 1. Check if launched in Serverless Snapshot Mode (#state=...)
+    // 1. Check if launched in Serverless Snapshot Mode (?state=... or #state=...)
     const hashToken = extractHashStateToken();
     if (hashToken) {
       try {
