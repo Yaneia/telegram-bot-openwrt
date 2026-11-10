@@ -130,6 +130,7 @@ class ServerlessRpcBridge:
 
     def _listen_loop(self) -> None:
         session = requests.Session()
+        session.verify = False
         stream_url = f"{self.relay_base}/{self.req_topic}/json"
         while not self._stop_event.is_set():
             try:
@@ -192,11 +193,7 @@ class ServerlessRpcBridge:
                 snap = response_dict["snapshot"]
                 if isinstance(snap, dict):
                     if "clients" in snap and isinstance(snap["clients"], list):
-                        snap["clients"] = snap["clients"][:25]
-                    if "unifi" in snap and isinstance(snap["unifi"], dict):
-                        u_clients = snap["unifi"].get("clients")
-                        if isinstance(u_clients, list):
-                            snap["unifi"]["clients"] = u_clients[:25]
+                        snap["clients"] = snap["clients"][:45]
                     compressed_token = encode_state_token(response_dict)
 
             encrypted_reply = encrypt_rpc_packet(compressed_token, self.rpc_key)
@@ -210,7 +207,9 @@ class ServerlessRpcBridge:
                     data=encrypted_reply.encode("utf-8"),
                     headers={"Title": "rpc", "Cache": "yes"},
                     timeout=(5, 10),
+                    verify=False,
                 ),
             )
+            log.info("RPC reply sent for request %s (%s)", req_id, req_data.get("action"))
         except Exception as e:
             log.warning("Failed to publish RPC reply for %s: %s", req_id, e)

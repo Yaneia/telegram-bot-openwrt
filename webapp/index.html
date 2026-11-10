@@ -78,14 +78,9 @@
           </button>
         </div>
 
-        <div class="divider"></div>
-        <div class="sub-label">Роутеры и радиомодули OpenWrt</div>
-        <div id="wifi-routers-list" class="stack-list"></div>
-
-        <div id="home-unifi-wlans-wrap" hidden>
+        <div id="home-guest-platforms-wrap" hidden>
           <div class="divider"></div>
-          <div class="sub-label">Гостевые сети UniFi Controller</div>
-          <div id="home-unifi-wlans-list" class="stack-list"></div>
+          <div id="home-guest-platforms-list" class="stack-list"></div>
         </div>
       </section>
 
@@ -180,8 +175,8 @@
           <div class="card-title-group">
             <span class="section-icon clients-icon">💻</span>
             <div>
-              <h2 class="card-title">Устройства в сети</h2>
-              <p class="card-subtitle" id="clients-count-subtitle">Активные DHCP и ARP клиенты</p>
+              <h2 class="card-title">Клиенты роутера OpenWrt</h2>
+              <p class="card-subtitle" id="clients-count-subtitle">Управление всеми клиентами сети</p>
             </div>
           </div>
           <div class="filter-pills">
@@ -195,16 +190,16 @@
             type="search"
             id="client-search-input"
             class="input-field"
-            placeholder="Поиск по имени, IP или MAC..."
+            placeholder="Поиск по имени, IP, MAC, SSID или AP..."
             autocomplete="off"
           />
         </div>
 
-        <div id="network-clients-list" class="clients-list"></div>
+        <div id="network-clients-list" class="stack-list"></div>
       </section>
     </main>
 
-    <!-- MINI APP 2B: UNIFI CONTROLLER (APs/Switches, WLANs, Clients & Signal) -->
+    <!-- MINI APP 2B: UNIFI CONTROLLER (APs/Switches & WLANs) -->
     <main id="screen-unifi" class="screen" hidden>
       <!-- UniFi WLANs -->
       <section class="card">
@@ -232,29 +227,6 @@
           </div>
         </div>
         <div id="unifi-devices-list" class="stack-list"></div>
-      </section>
-
-      <!-- UniFi Clients (Signal dBm, Kick, Block) -->
-      <section class="card">
-        <div class="card-header">
-          <div class="card-title-group">
-            <span class="section-icon">📱</span>
-            <div>
-              <h2 class="card-title">Клиенты UniFi</h2>
-              <p class="card-subtitle" id="unifi-clients-subtitle">Уровень сигнала (dBm), точка доступа и роуминг</p>
-            </div>
-          </div>
-        </div>
-        <div class="search-box">
-          <input
-            type="search"
-            id="unifi-client-search"
-            class="input-field"
-            placeholder="Поиск клиента по имени, SSID, IP или AP..."
-            autocomplete="off"
-          />
-        </div>
-        <div id="unifi-clients-list" class="stack-list"></div>
       </section>
     </main>
 

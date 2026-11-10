@@ -176,7 +176,13 @@ class UniFiClient:
             if not isinstance(w, dict):
                 continue
             name = str(w.get("name") or "SSID")
-            is_guest = bool(w.get("is_guest")) or (name.lower() in guest_names)
+            name_low = name.lower()
+            is_guest = (
+                bool(w.get("is_guest"))
+                or (name_low in guest_names)
+                or ("guest" in name_low)
+                or ("гост" in name_low)
+            )
             wlans.append({
                 "id": str(w.get("_id") or ""),
                 "name": name,
@@ -343,7 +349,7 @@ class UniFiClient:
             "ok": True,
             "wlans": wlans,
             "devices": devices,
-            "clients": clients[:45],
+            "clients": clients,
         }
 
     # ---------------- Actions & Mutations ----------------
@@ -352,6 +358,17 @@ class UniFiClient:
             raise UniFiError("Missing wlan_id")
         self._request("PUT", f"rest/wlanconf/{wlan_id}", {"enabled": bool(enabled)})
         return True
+
+    def toggle_guest_wlans(self, enabled: bool) -> int:
+        """Toggle all guest WLANs in UniFi on or off. Returns number of toggled WLANs."""
+        wlans = self.get_wlans()
+        guest_wlans = [w for w in wlans if w.get("is_guest")]
+        count = 0
+        for w in guest_wlans:
+            if w.get("id"):
+                self.toggle_wlan(w["id"], enabled)
+                count += 1
+        return count
 
     def restart_device(self, device_mac: str) -> bool:
         if not device_mac:

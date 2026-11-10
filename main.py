@@ -17,6 +17,7 @@ from openwrt_client import OpenWrtClient, RouterConfig, OpenWrtError
 from rpc_bridge import ServerlessRpcBridge, derive_rpc_credentials
 from state_codec import (
     build_serverless_snapshot,
+    encode_combined_snapshot_with_budget,
     encode_state_token,
     split_snapshot_into_app_tokens,
 )
@@ -186,7 +187,7 @@ def _format_user_list() -> str:
 async def build_user_state_tokens(
     user,
     bot_username: str = "",
-    max_per_button_len: int = 900,
+    max_per_button_len: int = 1650,
 ) -> Dict[str, str]:
     snapshot = await build_serverless_snapshot(
         user_id=user.id,
@@ -201,10 +202,14 @@ async def build_user_state_tokens(
         unifi=UNIFI,
         rpc_creds=RPC_CREDS,
     )
-    return split_snapshot_into_app_tokens(
+    combined_tok = encode_combined_snapshot_with_budget(
         snapshot,
-        max_per_button_len=max_per_button_len,
+        max_len=max_per_button_len,
     )
+    return {
+        "combined": combined_tok,
+        "home": combined_tok,
+    }
 
 
 async def handle_rpc_request(req_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -259,26 +264,41 @@ async def execute_miniapp_command(user_id: int, payload: Dict[str, Any]) -> str:
         return "🔄 Состояние пульта обновлено."
 
     # 1. Guest Wi-Fi Toggle (allowed for 'user' and 'admin')
+    # Supports target: "all" (both OpenWrt + UniFi guest), "openwrt" (all OpenWrt routers), "unifi" (all UniFi guest WLANs), or a specific router name
     if action == "wifi_toggle":
         mode = str(payload.get("mode") or "off").lower()
         target_router = str(payload.get("router") or "all")
         if mode not in ("on", "off"):
             return "⚠️ Некорректный режим Wi-Fi."
 
-        targets = (
-            {target_router: router_clients[target_router]}
-            if target_router != "all" and target_router in router_clients
-            else router_clients
-        )
         errors = []
-        for rname, client in targets.items():
+        toggled_parts = []
+
+        # 1a. Toggle on OpenWrt routers if target is "all", "openwrt", or a specific router name
+        if target_router != "unifi":
+            targets = (
+                {target_router: router_clients[target_router]}
+                if target_router not in ("all", "openwrt") and target_router in router_clients
+                else router_clients
+            )
+            for rname, client in targets.items():
+                try:
+                    await run_blocking(client.toggle_guest_wifi, mode)
+                    toggled_parts.append(f"OpenWrt ({rname})")
+                except Exception as e:
+                    errors.append(f"OpenWrt {rname}: {e}")
+
+        # 1b. Toggle Guest WLANs in UniFi if target is "all" or "unifi"
+        if target_router in ("all", "unifi") and UNIFI is not None:
             try:
-                await run_blocking(client.toggle_guest_wifi, mode)
+                count = await run_blocking(UNIFI.toggle_guest_wlans, mode == "on")
+                if count > 0:
+                    toggled_parts.append("UniFi Guest")
             except Exception as e:
-                errors.append(f"{rname}: {e}")
+                errors.append(f"UniFi: {e}")
 
         label = "ВКЛЮЧЕН ✅" if mode == "on" else "ВЫКЛЮЧЕН 🌙"
-        scope = "на всех роутерах" if target_router == "all" else f"на {target_router}"
+        scope = " + ".join(toggled_parts) if toggled_parts else target_router
         if errors:
             return f"⚠️ Гостевой Wi-Fi {label} ({scope}), но с ошибками:\n" + "\n".join(errors)
         return f"📶 Гостевой Wi-Fi {label} ({scope})."
@@ -361,6 +381,52 @@ async def execute_miniapp_command(user_id: int, payload: Dict[str, Any]) -> str:
                 return f"🚫 Клиент «{cname}» {'ЗАБЛОКИРОВАН' if block else 'РАЗБЛОКИРОВАН'} в UniFi."
         except Exception as e:
             return f"❌ Ошибка UniFi: {e}"
+
+    # 2d. Unified OpenWrt Router Client Management (Kick Wi-Fi, Block/Unblock WAN, Wake-on-LAN by MAC)
+    if action == "client_kick":
+        mac = str(payload.get("mac") or "").strip().lower()
+        cname = str(payload.get("hostname") or mac)
+        if not mac:
+            return "⚠️ Не указан MAC клиента."
+        for client in router_clients.values():
+            try:
+                await run_blocking(client.kick_wifi_client, mac)
+            except Exception:
+                pass
+        if UNIFI is not None:
+            try:
+                await run_blocking(UNIFI.kick_client, mac)
+            except Exception:
+                pass
+        return f"🔄 Клиент «{cname}» переподключен (Wi-Fi Kick)."
+
+    if action == "client_block":
+        mac = str(payload.get("mac") or "").strip().lower()
+        block = bool(payload.get("block", True))
+        cname = str(payload.get("hostname") or mac)
+        if not mac:
+            return "⚠️ Не указан MAC клиента."
+        errors = []
+        for rname, client in router_clients.items():
+            try:
+                await run_blocking(client.set_client_block, mac, block, cname)
+            except Exception as e:
+                errors.append(f"{rname}: {e}")
+        state_lbl = "ЗАБЛОКИРОВАН 🚫" if block else "РАЗБЛОКИРОВАН ✅"
+        if errors:
+            return f"⚠️ Клиент «{cname}» {state_lbl}, но с ошибками: {'; '.join(errors)}"
+        return f"🛡️ Доступ в интернет для «{cname}» ({mac}) {state_lbl}."
+
+    if action == "client_wol":
+        mac = str(payload.get("mac") or "").strip()
+        cname = str(payload.get("hostname") or mac)
+        if not mac:
+            return "⚠️ Не указан MAC для WOL."
+        try:
+            await run_blocking(send_magic_packet, mac, ip_address="255.255.255.255")
+            return f"⚡ Magic Packet (WOL) отправлен на «{cname}» ({mac})."
+        except Exception as e:
+            return f"❌ Ошибка WOL: {e}"
 
     # 3. Wake-on-LAN
     if action == "wol_wake":
@@ -448,41 +514,15 @@ def build_bot_application():
     ) -> Optional[ReplyKeyboardMarkup]:
         if not WEBAPP_STATIC_URL.startswith("https://") or not tokens:
             return None
-        is_admin = access_manager.is_admin(user_id)
-        home_tok = tokens.get("home", "")
+        combined_tok = tokens.get("combined") or tokens.get("home") or ""
         rows: List[List[KeyboardButton]] = [
             [
                 KeyboardButton(
-                    "🏠 Домашний пульт",
-                    web_app=WebAppInfo(url=_app_url("home", home_tok)),
+                    "🎛️ Открыть пульт",
+                    web_app=WebAppInfo(url=_app_url("home", combined_tok)),
                 )
             ]
         ]
-        if is_admin:
-            admin_row = [
-                KeyboardButton(
-                    "📡 Сеть и WOL",
-                    web_app=WebAppInfo(
-                        url=_app_url("network", tokens.get("network", home_tok))
-                    ),
-                ),
-            ]
-            if UNIFI is not None and "unifi" in tokens:
-                admin_row.append(
-                    KeyboardButton(
-                        "🛜 UniFi",
-                        web_app=WebAppInfo(url=_app_url("unifi", tokens["unifi"])),
-                    )
-                )
-            admin_row.append(
-                KeyboardButton(
-                    "🔐 Доступ",
-                    web_app=WebAppInfo(
-                        url=_app_url("admin", tokens.get("admin", home_tok))
-                    ),
-                )
-            )
-            rows.append(admin_row)
         util_row = [KeyboardButton("🔄 Обновить пульт")]
         if CHAT_MENU_ENABLED:
             util_row.append(KeyboardButton("📋 Меню в чате"))
@@ -501,7 +541,7 @@ def build_bot_application():
             return None
         if tokens is None:
             tokens = await build_user_state_tokens(
-                user, bot_username=bot_username, max_per_button_len=900
+                user, bot_username=bot_username, max_per_button_len=1650
             )
         reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
         try:
@@ -511,7 +551,7 @@ def build_bot_application():
             if "too long" in str(e).lower():
                 log.warning("Reply markup exceeded limit (%s), retrying with compact budget...", e)
                 tokens = await build_user_state_tokens(
-                    user, bot_username=bot_username, max_per_button_len=550
+                    user, bot_username=bot_username, max_per_button_len=1100
                 )
                 reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
                 await message.reply_text(text, reply_markup=reply_kb)

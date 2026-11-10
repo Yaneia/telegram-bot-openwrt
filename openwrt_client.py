@@ -305,18 +305,65 @@ class OpenWrtClient:
 
     def get_connected_clients(self) -> List[Dict[str, Any]]:
         """
-        Fetch DHCP leases and ARP table in a single sys.exec call to return
-        connected/known LAN & Wi-Fi clients with online state.
+        Fetch DHCP leases, ARP table, static DHCP host names, and blocked MAC rules
+        in a single sys.exec call to return all known LAN & Wi-Fi clients.
         """
         cmd = (
             "cat /tmp/dhcp.leases 2>/dev/null || true; "
             "echo '---ARP---'; "
-            "cat /proc/net/arp 2>/dev/null || true"
+            "cat /proc/net/arp 2>/dev/null || true; "
+            "echo '---UCI_DHCP---'; "
+            "uci show dhcp 2>/dev/null | grep -E '\\.(name|mac|ip)=' || true; "
+            "echo '---UCI_FW---'; "
+            "uci show firewall 2>/dev/null | grep 'tma_block_' || true"
         )
         raw = self.sys_exec(cmd)
         parts = raw.split("---ARP---")
         leases_text = parts[0].strip() if len(parts) > 0 else ""
-        arp_text = parts[1].strip() if len(parts) > 1 else ""
+        rest1 = parts[1] if len(parts) > 1 else ""
+        parts2 = rest1.split("---UCI_DHCP---")
+        arp_text = parts2[0].strip() if len(parts2) > 0 else ""
+        rest2 = parts2[1] if len(parts2) > 1 else ""
+        parts3 = rest2.split("---UCI_FW---")
+        uci_dhcp_text = parts3[0].strip() if len(parts3) > 0 else ""
+        uci_fw_text = parts3[1].strip() if len(parts3) > 1 else ""
+
+        # Parse static DHCP host entries from uci show dhcp
+        static_hosts: Dict[str, Dict[str, str]] = {}
+        for line in uci_dhcp_text.splitlines():
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip("'\"")
+            seg = k.split(".")
+            if len(seg) >= 3:
+                sec = seg[1]
+                field = seg[2]
+                static_hosts.setdefault(sec, {})[field] = v
+
+        static_name_by_mac: Dict[str, str] = {}
+        static_ip_by_mac: Dict[str, str] = {}
+        for sh in static_hosts.values():
+            mac_raw = sh.get("mac", "")
+            name_raw = sh.get("name", "")
+            ip_raw = sh.get("ip", "")
+            for m in mac_raw.replace(",", " ").split():
+                m_low = m.strip().lower()
+                if m_low:
+                    if name_raw:
+                        static_name_by_mac[m_low] = name_raw
+                    if ip_raw:
+                        static_ip_by_mac[m_low] = ip_raw
+
+        # Parse blocked MACs from firewall rules named tma_block_<mac_hex>
+        blocked_macs = set()
+        for line in uci_fw_text.splitlines():
+            if "tma_block_" in line:
+                idx = line.find("tma_block_")
+                hex_part = line[idx + len("tma_block_") : idx + len("tma_block_") + 12].lower()
+                if len(hex_part) == 12:
+                    mac_str = ":".join(hex_part[i : i + 2] for i in range(0, 12, 2))
+                    blocked_macs.add(mac_str)
 
         # Parse ARP table: IP HWtype Flags HWaddress Mask Device
         arp_by_mac: Dict[str, Dict[str, Any]] = {}
@@ -342,12 +389,18 @@ class OpenWrtClient:
                 expiry, mac, ip_addr, hostname = cols[:4]
                 mac_norm = mac.lower()
                 arp_entry = arp_by_mac.get(mac_norm, {})
+                resolved_name = (
+                    hostname
+                    if hostname and hostname != "*"
+                    else static_name_by_mac.get(mac_norm, mac_norm)
+                )
                 clients_by_mac[mac_norm] = {
-                    "hostname": hostname if hostname != "*" else "Unknown device",
+                    "hostname": resolved_name,
                     "ip": ip_addr,
                     "mac": mac_norm,
                     "online": bool(arp_entry.get("online", False)),
                     "interface": arp_entry.get("interface", "lan"),
+                    "blocked": mac_norm in blocked_macs,
                     "expires": int(expiry) if expiry.isdigit() else 0,
                 }
 
@@ -355,17 +408,67 @@ class OpenWrtClient:
         for mac_norm, arp_entry in arp_by_mac.items():
             if mac_norm not in clients_by_mac and arp_entry.get("online"):
                 clients_by_mac[mac_norm] = {
-                    "hostname": "Static IP device",
+                    "hostname": static_name_by_mac.get(mac_norm, arp_entry["ip"]),
                     "ip": arp_entry["ip"],
                     "mac": mac_norm,
                     "online": True,
                     "interface": arp_entry.get("interface", "lan"),
+                    "blocked": mac_norm in blocked_macs,
+                    "expires": 0,
+                }
+
+        # Also include any currently blocked MACs or static hosts not yet in list
+        for mac_norm, s_name in static_name_by_mac.items():
+            if mac_norm not in clients_by_mac:
+                clients_by_mac[mac_norm] = {
+                    "hostname": s_name,
+                    "ip": static_ip_by_mac.get(mac_norm, "—"),
+                    "mac": mac_norm,
+                    "online": False,
+                    "interface": "lan",
+                    "blocked": mac_norm in blocked_macs,
                     "expires": 0,
                 }
 
         result = list(clients_by_mac.values())
         result.sort(key=lambda c: (not c["online"], c["hostname"].lower(), c["ip"]))
         return result
+
+    def kick_wifi_client(self, mac: str) -> bool:
+        """Disconnect/deauthenticate a Wi-Fi client across all local OpenWrt hostapd interfaces."""
+        clean_mac = mac.strip().lower()
+        cmd = (
+            "for iface in $(ubus list hostapd.* 2>/dev/null); do "
+            f"ubus call $iface del_client '{{\"addr\":\"{clean_mac}\",\"reason\":5,\"deauth\":true,\"ban_time\":3000}}' 2>/dev/null || true; "
+            "done"
+        )
+        self.sys_exec(cmd)
+        return True
+
+    def set_client_block(self, mac: str, block: bool, hostname: str = "") -> bool:
+        """Block or unblock a client's WAN/forwarding traffic via OpenWrt UCI firewall rule."""
+        clean_mac = mac.strip().lower()
+        hex_id = clean_mac.replace(":", "").replace("-", "")[:12]
+        rule_sec = f"tma_block_{hex_id}"
+        if block:
+            rule_name = f"Block_{hostname or clean_mac}"
+            cmd = (
+                f"uci set firewall.{rule_sec}=rule; "
+                f"uci set firewall.{rule_sec}.name='{rule_name}'; "
+                f"uci set firewall.{rule_sec}.src='lan'; "
+                f"uci set firewall.{rule_sec}.dest='wan'; "
+                f"uci set firewall.{rule_sec}.src_mac='{clean_mac}'; "
+                f"uci set firewall.{rule_sec}.target='REJECT'; "
+                f"uci set firewall.{rule_sec}.enabled='1'; "
+                "uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1 || true"
+            )
+        else:
+            cmd = (
+                f"uci -q delete firewall.{rule_sec} || true; "
+                "uci commit firewall && /etc/init.d/firewall reload >/dev/null 2>&1 || true"
+            )
+        self.sys_exec(cmd)
+        return True
 
     def reboot(self) -> None:
         """

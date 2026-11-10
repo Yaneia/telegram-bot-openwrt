@@ -174,12 +174,18 @@ async def build_serverless_snapshot(
     if unifi is not None and not is_admin:
         try:
             all_wlans = await run_blocking(unifi.get_wlans)
-            guest_wlans = [w for w in all_wlans if w.get("is_guest")]
+            owrt_ssids_low = {s.lower() for s in ssids}
+            guest_wlans = []
+            for w in all_wlans:
+                if w.get("is_guest") or w.get("name", "").lower() in owrt_ssids_low:
+                    wc = dict(w)
+                    wc["is_guest"] = True
+                    guest_wlans.append(wc)
             snapshot["unifi"] = {"configured": True, "ok": True, "wlans": guest_wlans}
         except Exception as e:
             snapshot["unifi"] = {"configured": True, "ok": False, "error": str(e), "wlans": []}
 
-    # 2. If Admin, also collect router metrics, WOL status, connected clients, UniFi overview, and whitelist users
+    # 2. If Admin, also collect router metrics, WOL status, connected clients (merged with UniFi telemetry), UniFi APs/WLANs, and whitelist users
     if is_admin:
         routers_metrics: Dict[str, Any] = {}
         clients_by_mac: Dict[str, Dict[str, Any]] = {}
@@ -205,6 +211,7 @@ async def build_serverless_snapshot(
                             "ip": c["ip"],
                             "mac": mac,
                             "online": c["online"],
+                            "blocked": bool(c.get("blocked", False)),
                             "router": rname,
                         }
             except Exception as e:
@@ -226,7 +233,56 @@ async def build_serverless_snapshot(
 
         unifi_task = asyncio.create_task(_fetch_unifi_admin())
         await asyncio.gather(*[_fetch_router_admin(n, c) for n, c in router_clients.items()])
-        snapshot["unifi"] = await unifi_task
+        unifi_ov = await unifi_task
+
+        # Mark any UniFi WLAN matching an OpenWrt guest SSID as is_guest=True
+        owrt_ssids_low = {s.lower() for s in ssids}
+        if isinstance(unifi_ov, dict) and isinstance(unifi_ov.get("wlans"), list):
+            for w in unifi_ov["wlans"]:
+                if isinstance(w, dict) and w.get("name", "").lower() in owrt_ssids_low:
+                    w["is_guest"] = True
+
+        # Merge UniFi active clients telemetry (SSID, AP name, signal dBm) into OpenWrt clients_by_mac
+        unifi_clients = (
+            unifi_ov.pop("clients", [])
+            if isinstance(unifi_ov, dict)
+            else []
+        ) or []
+        for uc in unifi_clients:
+            if not isinstance(uc, dict):
+                continue
+            mac = str(uc.get("mac") or "").lower()
+            if not mac:
+                continue
+            existing = clients_by_mac.get(mac)
+            if existing:
+                existing["online"] = True
+                # If OpenWrt only had MAC/IP as hostname and UniFi has a friendly name, use it
+                u_host = str(uc.get("hostname") or "")
+                if (
+                    existing["hostname"] in (mac, existing["ip"], "Unknown device", "Static IP device")
+                    and u_host
+                    and u_host.lower() != mac
+                ):
+                    existing["hostname"] = u_host
+                if not uc.get("is_wired"):
+                    existing["essid"] = uc.get("essid") or ""
+                    existing["ap_name"] = uc.get("ap_name") or ""
+                    existing["signal_dbm"] = uc.get("signal_dbm") if uc.get("signal_dbm") is not None else uc.get("signal")
+            else:
+                clients_by_mac[mac] = {
+                    "hostname": str(uc.get("hostname") or mac),
+                    "ip": str(uc.get("ip") or "—"),
+                    "mac": mac,
+                    "online": True,
+                    "blocked": False,
+                    "router": "unifi",
+                    "essid": uc.get("essid") or "" if not uc.get("is_wired") else "",
+                    "ap_name": uc.get("ap_name") or "" if not uc.get("is_wired") else "",
+                    "signal_dbm": (uc.get("signal_dbm") if uc.get("signal_dbm") is not None else uc.get("signal")) if not uc.get("is_wired") else None,
+                }
+
+        snapshot["unifi"] = unifi_ov
 
         all_clients = sorted(
             clients_by_mac.values(),
@@ -246,12 +302,43 @@ async def build_serverless_snapshot(
             })
 
         snapshot["routers"] = [routers_metrics[k] for k in sorted(routers_metrics.keys())]
-        # Keep top 30 clients so the URL fragment stays compact
-        snapshot["clients"] = all_clients[:30]
+        snapshot["total_clients"] = len(all_clients)
+        snapshot["clients"] = all_clients[:80]
         snapshot["wol_hosts"] = wol_list
         snapshot["admin_users"] = access.list_users()
 
     return snapshot
+
+
+def encode_combined_snapshot_with_budget(
+    snapshot: Dict[str, Any],
+    max_len: int = 1650,
+) -> str:
+    """
+    Encode the complete combined snapshot (all 4 tabs: Home, Network, UniFi, Admin + OpenWrt clients)
+    into a single state token, trimming only if needed to stay under max_len chars.
+    """
+    snap_copy = dict(snapshot)
+    clients = list(snap_copy.get("clients") or [])
+    token = encode_state_token(snap_copy)
+
+    # If over budget, strip PoE port details first before touching clients
+    if len(token) > max_len and isinstance(snap_copy.get("unifi"), dict):
+        u_copy = dict(snap_copy["unifi"])
+        if u_copy.get("devices"):
+            u_copy["devices"] = [
+                {**d, "poe_ports": []} for d in u_copy["devices"]
+            ]
+            snap_copy["unifi"] = u_copy
+            token = encode_state_token(snap_copy)
+
+    while len(token) > max_len and len(clients) > 10:
+        new_count = max(10, int(len(clients) * 0.8) - 1)
+        clients = clients[:new_count]
+        snap_copy["clients"] = clients
+        token = encode_state_token(snap_copy)
+
+    return token
 
 
 def _encode_network_with_budget(network_snap: Dict[str, Any], max_len: int = 750) -> str:
