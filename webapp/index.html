@@ -79,8 +79,14 @@
         </div>
 
         <div class="divider"></div>
-        <div class="sub-label">Роутеры и радиомодули</div>
+        <div class="sub-label">Роутеры и радиомодули OpenWrt</div>
         <div id="wifi-routers-list" class="stack-list"></div>
+
+        <div id="home-unifi-wlans-wrap" hidden>
+          <div class="divider"></div>
+          <div class="sub-label">Гостевые сети UniFi Controller</div>
+          <div id="home-unifi-wlans-list" class="stack-list"></div>
+        </div>
       </section>
 
       <!-- AdGuard Home Card -->
@@ -198,6 +204,60 @@
       </section>
     </main>
 
+    <!-- MINI APP 2B: UNIFI CONTROLLER (APs/Switches, WLANs, Clients & Signal) -->
+    <main id="screen-unifi" class="screen" hidden>
+      <!-- UniFi WLANs -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">🛜</span>
+            <div>
+              <h2 class="card-title">Сети Wi-Fi (UniFi WLANs)</h2>
+              <p class="card-subtitle" id="unifi-wlans-subtitle">Управление SSID на точках UniFi</p>
+            </div>
+          </div>
+        </div>
+        <div id="unifi-wlans-list" class="stack-list"></div>
+      </section>
+
+      <!-- UniFi Access Points & Switches -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">🛸</span>
+            <div>
+              <h2 class="card-title">Точки доступа и Свитчи</h2>
+              <p class="card-subtitle">Статус, индикаторы LED, PoE-порты и перезагрузка</p>
+            </div>
+          </div>
+        </div>
+        <div id="unifi-devices-list" class="stack-list"></div>
+      </section>
+
+      <!-- UniFi Clients (Signal dBm, Kick, Block) -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">📱</span>
+            <div>
+              <h2 class="card-title">Клиенты UniFi</h2>
+              <p class="card-subtitle" id="unifi-clients-subtitle">Уровень сигнала (dBm), точка доступа и роуминг</p>
+            </div>
+          </div>
+        </div>
+        <div class="search-box">
+          <input
+            type="search"
+            id="unifi-client-search"
+            class="input-field"
+            placeholder="Поиск клиента по имени, SSID, IP или AP..."
+            autocomplete="off"
+          />
+        </div>
+        <div id="unifi-clients-list" class="stack-list"></div>
+      </section>
+    </main>
+
     <!-- MINI APP 3: ACCESS & ADMIN (Users & Profile) -->
     <main id="screen-admin" class="screen" hidden>
       <!-- Current Profile -->
@@ -266,6 +326,10 @@
       <button class="nav-tab" data-tab="network" id="nav-tab-network" hidden>
         <span class="nav-icon">📡</span>
         <span class="nav-label">Сеть и WOL</span>
+      </button>
+      <button class="nav-tab" data-tab="unifi" id="nav-tab-unifi" hidden>
+        <span class="nav-icon">🛜</span>
+        <span class="nav-label">UniFi</span>
       </button>
       <button class="nav-tab" data-tab="admin" id="nav-tab-admin" hidden>
         <span class="nav-icon">🔐</span>

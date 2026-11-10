@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional
 from adguard_client import AdGuardClient
 from auth import AccessManager
 from openwrt_client import OpenWrtClient
+from unifi_client import UniFiClient
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -84,6 +85,7 @@ async def build_serverless_snapshot(
     wol_hosts: Dict[str, Dict[str, str]],
     executor: ThreadPoolExecutor,
     bot_username: str = "",
+    unifi: Optional[UniFiClient] = None,
 ) -> Dict[str, Any]:
     """
     Collect live status from OpenWrt routers and AdGuard Home locally on the router
@@ -164,7 +166,16 @@ async def build_serverless_snapshot(
     }
     snapshot["adguard"] = adguard_data
 
-    # 2. If Admin, also collect router metrics, WOL status, connected clients, and whitelist users
+    # 1b. If UniFi is configured and user is not admin, fetch only guest WLANs for Home screen
+    if unifi is not None and not is_admin:
+        try:
+            all_wlans = await run_blocking(unifi.get_wlans)
+            guest_wlans = [w for w in all_wlans if w.get("is_guest")]
+            snapshot["unifi"] = {"configured": True, "ok": True, "wlans": guest_wlans}
+        except Exception as e:
+            snapshot["unifi"] = {"configured": True, "ok": False, "error": str(e), "wlans": []}
+
+    # 2. If Admin, also collect router metrics, WOL status, connected clients, UniFi overview, and whitelist users
     if is_admin:
         routers_metrics: Dict[str, Any] = {}
         clients_by_mac: Dict[str, Dict[str, Any]] = {}
@@ -200,7 +211,17 @@ async def build_serverless_snapshot(
                     "error": str(e),
                 }
 
+        async def _fetch_unifi_admin():
+            if unifi is None:
+                return {"configured": False}
+            try:
+                return await run_blocking(unifi.get_overview)
+            except Exception as e:
+                return {"configured": True, "ok": False, "error": str(e)}
+
+        unifi_task = asyncio.create_task(_fetch_unifi_admin())
         await asyncio.gather(*[_fetch_router_admin(n, c) for n, c in router_clients.items()])
+        snapshot["unifi"] = await unifi_task
 
         all_clients = sorted(
             clients_by_mac.values(),

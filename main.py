@@ -15,6 +15,7 @@ from adguard_client import AdGuardClient, AdGuardConfig, AdGuardError
 from auth import AccessManager
 from openwrt_client import OpenWrtClient, RouterConfig, OpenWrtError
 from state_codec import build_serverless_snapshot, encode_state_token
+from unifi_client import UniFiClient, UniFiConfig, UniFiError
 from webapp_server import WebAppServer
 
 # ---------------- Logging ----------------
@@ -69,6 +70,27 @@ if adguard_cfg and adguard_cfg.get("base_url"):
             password=adguard_cfg.get("password", ""),
             verify_tls=bool(adguard_cfg.get("verify_tls", False)),
             timeout=(int(timeout_cfg.get("connect", 5)), int(timeout_cfg.get("read", 10))),
+        )
+    )
+
+unifi_cfg = settings.get("unifi")
+UNIFI: Optional[UniFiClient] = None
+if unifi_cfg and (unifi_cfg.get("base_url") or unifi_cfg.get("username") or unifi_cfg.get("api_key")):
+    raw_guest_wlans = unifi_cfg.get("guest_wlan_names") or []
+    if isinstance(raw_guest_wlans, str):
+        guest_wlans = [x.strip() for x in raw_guest_wlans.split(",") if x.strip()]
+    else:
+        guest_wlans = [str(x).strip() for x in raw_guest_wlans if x]
+    UNIFI = UniFiClient(
+        UniFiConfig(
+            base_url=str(unifi_cfg.get("base_url") or "https://127.0.0.1:11443"),
+            username=str(unifi_cfg.get("username") or ""),
+            password=str(unifi_cfg.get("password") or ""),
+            api_key=str(unifi_cfg.get("api_key") or ""),
+            site=str(unifi_cfg.get("site") or "default"),
+            verify_tls=bool(unifi_cfg.get("verify_tls", False)),
+            is_unifi_os=unifi_cfg.get("is_unifi_os"),
+            guest_wlan_names=guest_wlans,
         )
     )
 
@@ -160,6 +182,7 @@ async def build_user_state_token(user, bot_username: str = "") -> str:
         wol_hosts=wake_on_lan_hosts,
         executor=_executor,
         bot_username=bot_username,
+        unifi=UNIFI,
     )
     return encode_state_token(snapshot)
 
@@ -223,9 +246,64 @@ async def execute_miniapp_command(user_id: int, payload: Dict[str, Any]) -> str:
         except AdGuardError as e:
             return f"❌ Ошибка AdGuard: {e}"
 
+    # 2b. UniFi WLAN Toggle (allowed for 'admin', or for 'user' if the WLAN is marked is_guest)
+    if action == "unifi_wlan_toggle":
+        if UNIFI is None:
+            return "⚠️ UniFi Controller не настроен в settings.yaml."
+        wlan_id = str(payload.get("wlan_id") or "").strip()
+        wlan_name = str(payload.get("name") or wlan_id)
+        enabled = bool(payload.get("enabled", True))
+        try:
+            if not is_admin:
+                wlans = await run_blocking(UNIFI.get_wlans)
+                matched = next((w for w in wlans if w["id"] == wlan_id), None)
+                if not matched or not matched.get("is_guest"):
+                    return "⛔ Обычным пользователям разрешено управлять только гостевыми сетями UniFi."
+            await run_blocking(UNIFI.toggle_wlan, wlan_id, enabled)
+            state_str = "ВКЛЮЧЕНА ✅" if enabled else "ВЫКЛЮЧЕНА 🌙"
+            return f"🛜 Сеть UniFi «{wlan_name}» {state_str}."
+        except UniFiError as e:
+            return f"❌ Ошибка UniFi WLAN: {e}"
+
     # ---------------- Admin-Only Actions ----------------
     if not is_admin:
         return "⛔ Это действие доступно только администраторам."
+
+    # 2c. UniFi Admin Actions (Restart AP/Switch, LED toggle, PoE cycle, Client kick/block)
+    if action.startswith("unifi_"):
+        if UNIFI is None:
+            return "⚠️ UniFi Controller не настроен в settings.yaml."
+        try:
+            if action == "unifi_device_restart":
+                mac = str(payload.get("mac") or "").strip()
+                dname = str(payload.get("name") or mac)
+                await run_blocking(UNIFI.restart_device, mac)
+                return f"🔄 Перезагрузка точки/устройства UniFi «{dname}» запущена."
+            if action == "unifi_device_led":
+                dev_id = str(payload.get("device_id") or "").strip()
+                mode = str(payload.get("mode") or "default").lower()
+                dname = str(payload.get("name") or dev_id)
+                await run_blocking(UNIFI.set_device_led, dev_id, mode)
+                return f"💡 Индикатор LED на «{dname}» переключен в режим: {mode.upper()}."
+            if action == "unifi_poe_cycle":
+                mac = str(payload.get("mac") or "").strip()
+                port_idx = int(payload.get("port_idx") or 0)
+                pname = str(payload.get("name") or f"Port {port_idx}")
+                await run_blocking(UNIFI.power_cycle_poe_port, mac, port_idx)
+                return f"⚡ Перезагрузка питания PoE запущена на порту «{pname}»."
+            if action == "unifi_client_kick":
+                mac = str(payload.get("mac") or "").strip()
+                cname = str(payload.get("hostname") or mac)
+                await run_blocking(UNIFI.kick_client, mac)
+                return f"🔄 Клиент «{cname}» переподключен (Kick)."
+            if action == "unifi_client_block":
+                mac = str(payload.get("mac") or "").strip()
+                block = bool(payload.get("block", True))
+                cname = str(payload.get("hostname") or mac)
+                await run_blocking(UNIFI.set_client_block, mac, block)
+                return f"🚫 Клиент «{cname}» {'ЗАБЛОКИРОВАН' if block else 'РАЗБЛОКИРОВАН'} в UniFi."
+        except Exception as e:
+            return f"❌ Ошибка UniFi: {e}"
 
     # 3. Wake-on-LAN
     if action == "wol_wake":
@@ -320,18 +398,26 @@ def build_bot_application():
             ]
         ]
         if is_admin:
-            rows.append(
-                [
+            admin_row = [
+                KeyboardButton(
+                    "📡 Сеть и WOL",
+                    web_app=WebAppInfo(url=_app_url("network", state_token)),
+                ),
+            ]
+            if UNIFI is not None:
+                admin_row.append(
                     KeyboardButton(
-                        "📡 Сеть и WOL",
-                        web_app=WebAppInfo(url=_app_url("network", state_token)),
-                    ),
-                    KeyboardButton(
-                        "🔐 Доступ",
-                        web_app=WebAppInfo(url=_app_url("admin", state_token)),
-                    ),
-                ]
+                        "🛜 UniFi",
+                        web_app=WebAppInfo(url=_app_url("unifi", state_token)),
+                    )
+                )
+            admin_row.append(
+                KeyboardButton(
+                    "🔐 Доступ",
+                    web_app=WebAppInfo(url=_app_url("admin", state_token)),
+                )
             )
+            rows.append(admin_row)
         rows.append(
             [
                 KeyboardButton("🔄 Обновить пульт"),
@@ -360,18 +446,26 @@ def build_bot_application():
                 ]
             )
             if is_admin:
-                button_rows.append(
-                    [
+                inline_admin_row = [
+                    InlineKeyboardButton(
+                        "📡 Сеть и WOL (App)",
+                        web_app=WebAppInfo(url=_app_url("network", state_token)),
+                    ),
+                ]
+                if UNIFI is not None:
+                    inline_admin_row.append(
                         InlineKeyboardButton(
-                            "📡 Сеть и WOL (App)",
-                            web_app=WebAppInfo(url=_app_url("network", state_token)),
-                        ),
-                        InlineKeyboardButton(
-                            "🔐 Доступ (App)",
-                            web_app=WebAppInfo(url=_app_url("admin", state_token)),
-                        ),
-                    ]
+                            "🛜 UniFi (App)",
+                            web_app=WebAppInfo(url=_app_url("unifi", state_token)),
+                        )
+                    )
+                inline_admin_row.append(
+                    InlineKeyboardButton(
+                        "🔐 Доступ (App)",
+                        web_app=WebAppInfo(url=_app_url("admin", state_token)),
+                    )
                 )
+                button_rows.append(inline_admin_row)
 
         button_rows.append(
             [

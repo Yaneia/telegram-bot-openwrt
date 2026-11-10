@@ -1,6 +1,6 @@
 # OpenWRT Control Bot & Serverless Telegram Mini Apps (TMA)
 
-This project provides a **Telegram Bot** and **3 logical Telegram Mini Apps (WebApps)** to control and monitor OpenWRT routers, AdGuard Home, and Wake-on-LAN hosts.
+This project provides a **Telegram Bot** and **4 logical Telegram Mini Apps (WebApps)** to control and monitor OpenWRT routers, UniFi OS / Network Controller, AdGuard Home, and Wake-on-LAN hosts.
 
 ### 🔒 Zero-Endpoint Security Architecture (No Open Ports!)
 By default, **the router does not expose any HTTP/HTTPS port or tunnel to the internet**:
@@ -14,10 +14,10 @@ By default, **the router does not expose any HTTP/HTTPS port or tunnel to the in
 
 ## Logical Division of Telegram Mini Apps
 
-The Mini App is logically divided into **3 specialized apps**, accessible directly from the bot's bottom Reply Keyboard:
+The Mini App is logically divided into **4 specialized apps**, accessible directly from the bot's bottom Reply Keyboard:
 
 1. 🏠 **Home Control App (`?app=home`) — «Домашний пульт»** *(All whitelisted users & admins)*
-   - **Guest Wi-Fi**: Live status (`Enabled` / `Disabled`) across all routers and radio interfaces (`wifinet5`, `wifinet6`), SSID display, global toggle ("Enable All" / "Disable All"), and per-router toggles.
+   - **Guest Wi-Fi (OpenWRT & UniFi)**: Live status (`Enabled` / `Disabled`) across all OpenWRT routers (`wifinet5`, `wifinet6`) and UniFi Guest WLANs, SSID display, global toggle ("Enable All" / "Disable All"), and per-router / per-SSID toggles.
    - **AdGuard Home**: Live protection status, real-time countdown timer when paused, DNS filtering statistics (total queries, blocked queries, block percentage, latency), and 1-tap pause buttons (`10m`, `30m`, `60m`).
 
 2. 📡 **Network & Devices App (`?app=network`) — «Сеть и WOL»** *(Admins only)*
@@ -25,7 +25,12 @@ The Mini App is logically divided into **3 specialized apps**, accessible direct
    - **Wake-on-LAN (WOL)**: Configured hosts with live **Online / Offline** detection (via router ARP & DHCP tables) and 1-tap Magic Packet wake.
    - **Connected Clients**: Searchable & filterable list of LAN/Wi-Fi devices (`hostname`, `IP`, `MAC`, `online` status).
 
-3. 🔐 **Access & System App (`?app=admin`) — «Доступ»** *(Admins only)*
+3. 🛜 **UniFi Controller App (`?app=unifi`) — «UniFi»** *(Admins only, when `unifi:` is configured)*
+   - **All UniFi Wi-Fi Networks (WLANs)**: View active client counts per SSID and toggle any Wi-Fi network on/off.
+   - **UniFi Devices (APs & Switches)**: Monitor model, firmware, IP, CPU/RAM load, uptime, connected clients, toggle status LED (`on` / `off` / `default`), restart APs, and power-cycle active PoE switch ports (`W` consumption display).
+   - **UniFi Active Clients**: Monitor signal quality (`dBm`), connected AP name, SSID, IP/MAC, with 1-tap **Kick (Reconnect)** and **Block MAC** actions.
+
+4. 🔐 **Access & System App (`?app=admin`) — «Доступ»** *(Admins only)*
    - **Role-Based Access Control (RBAC)**: View all authorized users (`Admin` vs `User`), add new Telegram User IDs via an inline form, or revoke access in one tap.
 
 ---

@@ -21,6 +21,8 @@
     wolHosts: [],
     clientFilter: "online",
     clientSearch: "",
+    unifi: null,
+    unifiClientSearch: "",
     adminUsers: [],
   };
 
@@ -34,6 +36,11 @@
       icon: "📡",
       title: "Сеть и Устройства",
       subtitle: "Мониторинг OpenWrt, клиенты и WOL",
+    },
+    unifi: {
+      icon: "🛜",
+      title: "UniFi Controller",
+      subtitle: "Точки доступа, SSID, сигнал клиентов и PoE",
     },
     admin: {
       icon: "🔐",
@@ -232,22 +239,23 @@
   }
 
   function detectInitialApp() {
+    const validTabs = ["home", "network", "unifi", "admin"];
     const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
-    if (["home", "network", "admin"].includes(path)) {
+    if (validTabs.includes(path)) {
       return path;
     }
     const params = new URLSearchParams(window.location.search);
     const qApp = params.get("app") || params.get("mode") || params.get("tab");
-    if (["home", "network", "admin"].includes(qApp)) {
+    if (validTabs.includes(qApp)) {
       return qApp;
     }
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
     const hApp = hashParams.get("app");
-    if (["home", "network", "admin"].includes(hApp)) {
+    if (validTabs.includes(hApp)) {
       return hApp;
     }
     const startParam = tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param;
-    if (["home", "network", "admin"].includes(startParam)) {
+    if (validTabs.includes(startParam)) {
       return startParam;
     }
     return "home";
@@ -298,7 +306,7 @@
   // ---------------- Screen & Tab Switching ----------------
   async function switchTab(tabName) {
     if (!state.user || !state.user.is_authorized) return;
-    if ((tabName === "network" || tabName === "admin") && !state.user.is_admin) {
+    if ((tabName === "network" || tabName === "unifi" || tabName === "admin") && !state.user.is_admin) {
       tabName = "home";
     }
     state.activeTab = tabName;
@@ -316,6 +324,7 @@
     $("screen-unauthorized").hidden = true;
     $("screen-home").hidden = tabName !== "home";
     $("screen-network").hidden = tabName !== "network";
+    $("screen-unifi").hidden = tabName !== "unifi";
     $("screen-admin").hidden = tabName !== "admin";
 
     document.querySelectorAll(".nav-tab").forEach((btn) => {
@@ -333,6 +342,7 @@
       }
       if (state.activeTab === "home") renderHome();
       else if (state.activeTab === "network") renderNetwork();
+      else if (state.activeTab === "unifi") renderUnifi();
       else if (state.activeTab === "admin") renderAdmin();
       return;
     }
@@ -351,6 +361,8 @@
         state.clients = res.clients || [];
         state.wolHosts = res.wol_hosts || [];
         renderNetwork();
+      } else if (state.activeTab === "unifi") {
+        renderUnifi();
       } else if (state.activeTab === "admin") {
         const res = await apiCall("/api/admin/users");
         state.adminUsers = res.users || [];
@@ -451,6 +463,54 @@
       btn.onclick = () =>
         handleWifiToggle(btn.dataset.action, btn.dataset.routerWifi, btn);
     });
+
+    // Also render UniFi Guest WLANs inside Home if configured
+    const unifiWrap = $("home-unifi-wlans-wrap");
+    const unifiList = $("home-unifi-wlans-list");
+    const guestWlans =
+      state.unifi && state.unifi.wlans
+        ? state.unifi.wlans.filter((w) => w.is_guest)
+        : [];
+    if (unifiWrap && unifiList && guestWlans.length > 0) {
+      unifiWrap.hidden = false;
+      unifiList.innerHTML = guestWlans
+        .map(
+          (w) => `
+          <div class="list-item">
+            <div class="list-item-row">
+              <div>
+                <div class="item-title">
+                  🛜 ${escapeHtml(w.name)}
+                  <span class="status-badge ${w.enabled ? "status-on" : "status-off"}">
+                    ${w.enabled ? "Вкл" : "Выкл"}
+                  </span>
+                </div>
+                <div class="item-meta">UniFi Guest SSID • Диапазон: ${escapeHtml(w.band)}</div>
+              </div>
+              <button class="btn btn-sm ${w.enabled ? "btn-secondary" : "btn-success"}"
+                data-unifi-wlan="${escapeHtml(w.id)}"
+                data-unifi-wlan-name="${escapeHtml(w.name)}"
+                data-enabled="${w.enabled ? "false" : "true"}">
+                ${w.enabled ? "Выключить" : "Включить"}
+              </button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+
+      unifiList.querySelectorAll("[data-unifi-wlan]").forEach((btn) => {
+        btn.onclick = () =>
+          sendServerlessCommand({
+            action: "unifi_wlan_toggle",
+            wlan_id: btn.dataset.unifiWlan,
+            name: btn.dataset.unifiWlanName,
+            enabled: btn.dataset.enabled === "true",
+          });
+      });
+    } else if (unifiWrap) {
+      unifiWrap.hidden = true;
+    }
   }
 
   async function handleWifiToggle(action, router = "all", btnEl = null) {
@@ -805,6 +865,305 @@
       .join("");
   }
 
+  // ---------------- Render: UNIFI CONTROLLER APP ----------------
+  function renderUnifi() {
+    const u = state.unifi;
+    const wlansEl = $("unifi-wlans-list");
+    const devsEl = $("unifi-devices-list");
+    const clientsEl = $("unifi-clients-list");
+
+    if (!u || !u.configured) {
+      wlansEl.innerHTML = `<div class="item-meta">Секция unifi не настроена в settings.yaml</div>`;
+      devsEl.innerHTML = `<div class="item-meta">Нет данных</div>`;
+      clientsEl.innerHTML = `<div class="item-meta">Нет данных</div>`;
+      return;
+    }
+
+    if (!u.ok) {
+      const errMsg = escapeHtml(u.error || "Ошибка подключения к UniFi Controller");
+      wlansEl.innerHTML = `<div class="item-meta">⚠️ ${errMsg}</div>`;
+      devsEl.innerHTML = `<div class="item-meta">⚠️ ${errMsg}</div>`;
+      clientsEl.innerHTML = `<div class="item-meta">⚠️ ${errMsg}</div>`;
+      return;
+    }
+
+    // 1. Render UniFi WLANs
+    const wlans = u.wlans || [];
+    $("unifi-wlans-subtitle").textContent = `Активно ${wlans.filter((w) => w.enabled).length} из ${wlans.length} SSID`;
+    if (!wlans.length) {
+      wlansEl.innerHTML = `<div class="item-meta">Wi-Fi сети в UniFi не найдены</div>`;
+    } else {
+      wlansEl.innerHTML = wlans
+        .map(
+          (w) => `
+          <div class="list-item">
+            <div class="list-item-row">
+              <div>
+                <div class="item-title">
+                  📶 ${escapeHtml(w.name)}
+                  <span class="status-badge ${w.enabled ? "status-on" : "status-off"}">
+                    ${w.enabled ? "Вкл" : "Выкл"}
+                  </span>
+                  ${w.is_guest ? `<span class="status-badge status-neutral">Guest</span>` : ""}
+                </div>
+                <div class="item-meta">Диапазон: ${escapeHtml(w.band)} • Защита: ${escapeHtml(w.security)}</div>
+              </div>
+              <button class="btn btn-sm ${w.enabled ? "btn-secondary" : "btn-success"}"
+                data-u-wlan="${escapeHtml(w.id)}"
+                data-u-wlan-name="${escapeHtml(w.name)}"
+                data-u-enabled="${w.enabled ? "false" : "true"}">
+                ${w.enabled ? "Выключить" : "Включить"}
+              </button>
+            </div>
+          </div>
+        `
+        )
+        .join("");
+
+      wlansEl.querySelectorAll("[data-u-wlan]").forEach((btn) => {
+        btn.onclick = () =>
+          sendServerlessCommand({
+            action: "unifi_wlan_toggle",
+            wlan_id: btn.dataset.uWlan,
+            name: btn.dataset.uWlanName,
+            enabled: btn.dataset.uEnabled === "true",
+          });
+      });
+    }
+
+    // 2. Render UniFi APs & Switches
+    const devs = u.devices || [];
+    if (!devs.length) {
+      devsEl.innerHTML = `<div class="item-meta">Точки доступа и свитчи не найдены</div>`;
+    } else {
+      devsEl.innerHTML = devs
+        .map((d) => {
+          const nextLed = d.led_override === "off" ? "on" : "off";
+          const ledLabel = d.led_override === "off" ? "💡 Вкл LED" : "🌑 Выкл LED";
+          const poeHtml =
+            d.poe_ports && d.poe_ports.length > 0
+              ? `
+              <div class="divider" style="margin:8px 0;"></div>
+              <div class="sub-label">PoE-порты</div>
+              <div class="stack-list">
+                ${d.poe_ports
+                  .map(
+                    (p) => `
+                  <div class="client-row">
+                    <div>
+                      <div style="font-weight:600;font-size:13px;">
+                        🔌 #${p.port_idx} ${escapeHtml(p.name)}
+                      </div>
+                      <div class="item-meta">
+                        ${p.up ? "🟢 Активен" : "⚪ Не подключен"} • Потребление: <strong>${p.poe_power_w} W</strong>
+                      </div>
+                    </div>
+                    <button class="btn btn-sm btn-warning-soft"
+                      data-poe-mac="${escapeHtml(d.mac)}"
+                      data-poe-port="${p.port_idx}"
+                      data-poe-name="${escapeHtml(p.name)}">
+                      ⚡ PoE Reset
+                    </button>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            `
+              : "";
+
+          return `
+            <div class="list-item">
+              <div class="list-item-row">
+                <div>
+                  <div class="item-title">
+                    🛸 ${escapeHtml(d.name)}
+                    <span class="status-badge ${d.online ? "status-on" : "status-err"}">
+                      ${d.online ? "Онлайн" : "Офлайн"}
+                    </span>
+                  </div>
+                  <div class="item-meta">
+                    ${escapeHtml(d.model)} • v${escapeHtml(d.version)} • ${escapeHtml(d.ip)}
+                  </div>
+                </div>
+                <div style="display:flex;gap:6px;">
+                  ${
+                    d.id
+                      ? `<button class="btn btn-sm btn-secondary"
+                          data-u-led-id="${escapeHtml(d.id)}"
+                          data-u-led-mode="${nextLed}"
+                          data-u-led-name="${escapeHtml(d.name)}">${ledLabel}</button>`
+                      : ""
+                  }
+                  <button class="btn btn-sm btn-danger-soft"
+                    data-u-restart-mac="${escapeHtml(d.mac)}"
+                    data-u-restart-name="${escapeHtml(d.name)}">
+                    🔄 Ребут
+                  </button>
+                </div>
+              </div>
+
+              <div class="metrics-grid">
+                <div class="metric-chip">
+                  <span class="metric-chip-label">Uptime</span>
+                  <span class="metric-chip-val">${formatUptime(d.uptime_seconds)}</span>
+                </div>
+                <div class="metric-chip">
+                  <span class="metric-chip-label">CPU / RAM</span>
+                  <span class="metric-chip-val">${d.cpu_percent || 0}% / ${d.mem_percent || 0}%</span>
+                </div>
+                <div class="metric-chip">
+                  <span class="metric-chip-label">Клиенты</span>
+                  <span class="metric-chip-val">${d.num_sta || 0}</span>
+                </div>
+              </div>
+              ${poeHtml}
+            </div>
+          `;
+        })
+        .join("");
+
+      devsEl.querySelectorAll("[data-u-led-id]").forEach((btn) => {
+        btn.onclick = () =>
+          sendServerlessCommand({
+            action: "unifi_device_led",
+            device_id: btn.dataset.uLedId,
+            mode: btn.dataset.uLedMode,
+            name: btn.dataset.uLedName,
+          });
+      });
+
+      devsEl.querySelectorAll("[data-u-restart-mac]").forEach((btn) => {
+        btn.onclick = async () => {
+          const dname = btn.dataset.uRestartName;
+          const ok = await askConfirm(
+            `Перезагрузить ${dname}?`,
+            `Точка доступа / устройство UniFi «${dname}» будет перезагружено.`
+          );
+          if (!ok) return;
+          sendServerlessCommand({
+            action: "unifi_device_restart",
+            mac: btn.dataset.uRestartMac,
+            name: dname,
+          });
+        };
+      });
+
+      devsEl.querySelectorAll("[data-poe-mac]").forEach((btn) => {
+        btn.onclick = async () => {
+          const pname = btn.dataset.poeName;
+          const ok = await askConfirm(
+            `Сбросить питание PoE (${pname})?`,
+            `Питание на порту #${btn.dataset.poePort} (${pname}) будет кратковременно отключено и включено заново.`
+          );
+          if (!ok) return;
+          sendServerlessCommand({
+            action: "unifi_poe_cycle",
+            mac: btn.dataset.poeMac,
+            port_idx: Number(btn.dataset.poePort),
+            name: pname,
+          });
+        };
+      });
+    }
+
+    // 3. Render UniFi Clients
+    renderUnifiClientsList();
+  }
+
+  function renderUnifiClientsList() {
+    const u = state.unifi;
+    const clientsEl = $("unifi-clients-list");
+    if (!u || !u.ok) return;
+
+    const allClients = u.clients || [];
+    $("unifi-clients-subtitle").textContent = `Активных клиентов в UniFi: ${allClients.length}`;
+
+    const q = (state.unifiClientSearch || "").trim().toLowerCase();
+    const filtered = allClients.filter((c) => {
+      if (!q) return true;
+      return (
+        (c.hostname || "").toLowerCase().includes(q) ||
+        (c.ip || "").toLowerCase().includes(q) ||
+        (c.mac || "").toLowerCase().includes(q) ||
+        (c.essid || "").toLowerCase().includes(q) ||
+        (c.ap_name || "").toLowerCase().includes(q)
+      );
+    });
+
+    if (!filtered.length) {
+      clientsEl.innerHTML = `<div class="item-meta">Клиенты не найдены</div>`;
+      return;
+    }
+
+    clientsEl.innerHTML = filtered
+      .map((c) => {
+        let sigBadge = `<span class="status-badge status-off">🔌 LAN</span>`;
+        if (!c.is_wired && c.signal_dbm !== null && c.signal_dbm !== undefined) {
+          const s = Number(c.signal_dbm);
+          const cls = s >= -65 ? "status-on" : s >= -75 ? "status-warn" : "status-err";
+          sigBadge = `<span class="status-badge ${cls}">📶 ${s} dBm</span>`;
+        }
+        return `
+          <div class="list-item">
+            <div class="list-item-row">
+              <div style="min-width:0;">
+                <div class="item-title">
+                  ${escapeHtml(c.hostname)}
+                  ${sigBadge}
+                </div>
+                <div class="item-meta">
+                  ${escapeHtml(c.essid || "LAN")} → <strong>${escapeHtml(c.ap_name)}</strong> • ${escapeHtml(c.ip)}
+                </div>
+              </div>
+              <div style="display:flex;gap:6px;flex-shrink:0;">
+                ${
+                  !c.is_wired
+                    ? `<button class="btn btn-sm btn-secondary"
+                        data-u-kick="${escapeHtml(c.mac)}"
+                        data-u-name="${escapeHtml(c.hostname)}"
+                        title="Переподключить к ближайшей точке">🔄 Kick</button>`
+                    : ""
+                }
+                <button class="btn btn-sm btn-danger-soft"
+                  data-u-block="${escapeHtml(c.mac)}"
+                  data-u-name="${escapeHtml(c.hostname)}">
+                  🚫 Блок
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    clientsEl.querySelectorAll("[data-u-kick]").forEach((btn) => {
+      btn.onclick = () =>
+        sendServerlessCommand({
+          action: "unifi_client_kick",
+          mac: btn.dataset.uKick,
+          hostname: btn.dataset.uName,
+        });
+    });
+
+    clientsEl.querySelectorAll("[data-u-block]").forEach((btn) => {
+      btn.onclick = async () => {
+        const cname = btn.dataset.uName;
+        const ok = await askConfirm(
+          `Заблокировать ${cname}?`,
+          `Устройство «${cname}» (${btn.dataset.uBlock}) будет заблокировано в контроллере UniFi.`
+        );
+        if (!ok) return;
+        sendServerlessCommand({
+          action: "unifi_client_block",
+          mac: btn.dataset.uBlock,
+          hostname: cname,
+          block: true,
+        });
+      };
+    });
+  }
+
   // ---------------- Render: ADMIN APP ----------------
   function renderAdmin() {
     if (state.user) {
@@ -914,6 +1273,14 @@
       renderClientsList();
     };
 
+    const unifiSearchEl = $("unifi-client-search");
+    if (unifiSearchEl) {
+      unifiSearchEl.oninput = (e) => {
+        state.unifiClientSearch = e.target.value || "";
+        renderUnifiClientsList();
+      };
+    }
+
     $("add-user-form").onsubmit = async (e) => {
       e.preventDefault();
       const input = $("new-user-id-input");
@@ -1018,6 +1385,7 @@
 
     if (state.user.is_admin) {
       $("nav-tab-network").hidden = false;
+      $("nav-tab-unifi").hidden = !(state.unifi && state.unifi.configured);
       $("nav-tab-admin").hidden = false;
       $("bottom-nav").hidden = false;
     } else {
@@ -1073,6 +1441,7 @@
         state.routers = snapshot.routers || [];
         state.clients = snapshot.clients || [];
         state.wolHosts = snapshot.wol_hosts || [];
+        state.unifi = snapshot.unifi || null;
         state.adminUsers = snapshot.admin_users || [];
         applyUserRoleAndBoot(initialTab);
         return;

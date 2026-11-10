@@ -29,6 +29,16 @@ adguard:
     connect: 5
     read: 10
 
+# Optional: UniFi OS Server / UniFi Network Controller
+unifi:
+  base_url: "https://127.0.0.1:11443"         # Port 11443 from your unifi-os-server container
+  api_key: ""                                 # Recommended: API Key from UniFi Settings -> Control Plane -> Integrations
+  username: ""                                # Or local admin username (if not using api_key)
+  password: ""                                # Or local admin password
+  site: "default"
+  verify_tls: false
+  guest_wlan_names: []                        # Optional: e.g. ["Guest_WiFi"] so regular users can toggle it in Home app
+
 wake_on_lan_hosts:
   home_pc:
     mac: "00:11:22:33:44:55"
