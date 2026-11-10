@@ -924,26 +924,51 @@
     });
   }
 
-  function applyUserRoleAndBoot(initialTab) {
-    const rolePill = $("user-role-pill");
-    rolePill.hidden = false;
-    rolePill.textContent =
-      state.user.role === "admin"
-        ? "Admin"
-        : state.user.role === "user"
-        ? "User"
-        : "Guest";
-    rolePill.classList.toggle("role-admin", state.user.role === "admin");
+  function denyAccess(title, description, tgUserId = null) {
+    $("screen-home").hidden = true;
+    $("screen-network").hidden = true;
+    $("screen-admin").hidden = true;
+    $("bottom-nav").hidden = true;
+    $("refresh-btn").hidden = true;
+    $("user-role-pill").hidden = true;
 
-    if (!state.user.is_authorized) {
-      $("app-icon").textContent = "🔒";
-      $("app-title").textContent = "Нет доступа";
-      $("app-subtitle").textContent = `Telegram ID: ${state.user.user_id}`;
-      $("unauth-user-id").textContent = state.user.user_id;
-      $("screen-unauthorized").hidden = false;
-      $("bottom-nav").hidden = true;
+    $("app-icon").textContent = "⛔";
+    $("app-title").textContent = "Доступ закрыт";
+    $("app-subtitle").textContent = "Требуется авторизация в боте";
+
+    $("unauth-icon").textContent = "🔒";
+    $("unauth-title").textContent = title || "Доступ запрещён";
+    $("unauth-desc").textContent =
+      description ||
+      "Это приложение доступно только авторизованным пользователям бота.";
+
+    if (tgUserId) {
+      $("unauth-user-id").textContent = tgUserId;
+      $("unauth-id-box").hidden = false;
+      $("copy-unauth-id-btn").hidden = false;
+    } else {
+      $("unauth-id-box").hidden = true;
+      $("copy-unauth-id-btn").hidden = true;
+    }
+
+    $("screen-unauthorized").hidden = false;
+  }
+
+  function applyUserRoleAndBoot(initialTab) {
+    if (!state.user || !state.user.is_authorized) {
+      denyAccess(
+        "Вы не добавлены в бот",
+        "Ваш аккаунт не находится в белом списке бота. Отправьте ваш Telegram ID администратору для получения доступа:",
+        state.user ? state.user.user_id : null
+      );
       return;
     }
+
+    $("refresh-btn").hidden = false;
+    const rolePill = $("user-role-pill");
+    rolePill.hidden = false;
+    rolePill.textContent = state.user.role === "admin" ? "Admin" : "User";
+    rolePill.classList.toggle("role-admin", state.user.role === "admin");
 
     if (state.user.is_admin) {
       $("nav-tab-network").hidden = false;
@@ -956,132 +981,58 @@
     switchTab(initialTab);
   }
 
-  function startDemoMode(initialTab = "home") {
-    state.serverless = true;
-    state.snapshotTs = Math.floor(Date.now() / 1000);
-    state.user = {
-      user_id: 123456789,
-      first_name: "Demo",
-      last_name: "Admin",
-      username: "demo_admin",
-      role: "admin",
-      is_authorized: true,
-      is_admin: true,
-    };
-    state.wifi = {
-      enabled: true,
-      ssids: ["Home_Guest_2.4G", "Home_Guest_5G"],
-      routers: [
-        {
-          name: "main_router",
-          ok: true,
-          ip: "192.168.1.1",
-          enabled: true,
-          interfaces: [
-            { section: "wifinet5", enabled: true },
-            { section: "wifinet6", enabled: true },
-          ],
-        },
-      ],
-    };
-    state.adguard = {
-      configured: true,
-      ok: true,
-      enabled: true,
-      version: "v0.107.52",
-      disabled_duration_ms: 0,
-      stats: {
-        dns_queries: 48920,
-        blocked_filtering: 7340,
-        blocked_percent: 15.0,
-        avg_processing_ms: 1.6,
-      },
-    };
-    state.routers = [
-      {
-        name: "main_router",
-        hostname: "OpenWrt-Main",
-        ok: true,
-        ip: "192.168.1.1",
-        model: "Xiaomi AX3600",
-        version: "OpenWrt 23.05.3",
-        uptime_seconds: 349200,
-        load_avg: [0.12, 0.08, 0.05],
-        clients_count: 2,
-        memory: {
-          used_bytes: 185 * 1024 * 1024,
-          total_bytes: 512 * 1024 * 1024,
-          percent: 36.1,
-        },
-      },
-    ];
-    state.wolHosts = [
-      {
-        name: "home_pc",
-        mac: "00:11:22:33:44:55",
-        online: true,
-        detected_ip: "192.168.1.50",
-      },
-    ];
-    state.clients = [
-      {
-        hostname: "home_pc",
-        ip: "192.168.1.50",
-        mac: "00:11:22:33:44:55",
-        online: true,
-        router: "main_router",
-      },
-      {
-        hostname: "MacBook-Pro",
-        ip: "192.168.1.25",
-        mac: "aa:bb:cc:11:22:33",
-        online: true,
-        router: "main_router",
-      },
-    ];
-    state.adminUsers = [
-      { user_id: 123456789, role: "admin", is_config_admin: true, in_whitelist_file: false },
-      { user_id: 987654321, role: "user", is_config_admin: false, in_whitelist_file: true },
-    ];
-    applyUserRoleAndBoot(initialTab);
-    showToast("Включен демо-режим предпросмотра 👀");
-  }
-
   async function bootstrap() {
     bindStaticEvents();
+    $("refresh-btn").hidden = true;
     const initialTab = detectInitialApp();
-
-    const demoBtn = $("start-demo-btn");
-    if (demoBtn) {
-      demoBtn.onclick = () => startDemoMode(initialTab);
-    }
+    const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : null;
 
     // 1. Check if launched in Serverless Snapshot Mode (#state=...)
     const hashToken = extractHashStateToken();
     if (hashToken) {
       try {
         const snapshot = await decodeStateToken(hashToken);
-        if (snapshot && snapshot.user) {
-          state.serverless = true;
-          state.snapshotTs = snapshot.ts || 0;
-          state.botUsername = snapshot.bot_username || "";
-          state.user = snapshot.user;
-          state.wifi = snapshot.wifi || null;
-          state.adguard = snapshot.adguard || null;
-          state.routers = snapshot.routers || [];
-          state.clients = snapshot.clients || [];
-          state.wolHosts = snapshot.wol_hosts || [];
-          state.adminUsers = snapshot.admin_users || [];
-          applyUserRoleAndBoot(initialTab);
+        if (!snapshot || !snapshot.user || !snapshot.user.is_authorized) {
+          denyAccess(
+            "Доступ запрещён",
+            "Ваш аккаунт не авторизован для использования этого бота.",
+            tgUser ? tgUser.id : null
+          );
           return;
         }
+
+        // Strict check: must be opened inside Telegram by the exact user_id for whom the snapshot was issued
+        if (!tgUser || !tgUser.id || Number(tgUser.id) !== Number(snapshot.user.user_id)) {
+          denyAccess(
+            "Доступ запрещён",
+            "Апка может быть открыта только авторизованным пользователем внутри Telegram.",
+            tgUser ? tgUser.id : null
+          );
+          return;
+        }
+
+        state.serverless = true;
+        state.snapshotTs = snapshot.ts || 0;
+        state.botUsername = snapshot.bot_username || "";
+        state.user = snapshot.user;
+        state.wifi = snapshot.wifi || null;
+        state.adguard = snapshot.adguard || null;
+        state.routers = snapshot.routers || [];
+        state.clients = snapshot.clients || [];
+        state.wolHosts = snapshot.wol_hosts || [];
+        state.adminUsers = snapshot.admin_users || [];
+        applyUserRoleAndBoot(initialTab);
+        return;
       } catch (err) {
-        showToast("Ошибка чтения снимка состояния: " + err.message);
+        denyAccess("Ошибка доступа", "Некорректный или повреждённый токен состояния.");
+        return;
       }
     }
 
-    // 2. Fallback: Local API Mode (only when not hosted on static GitHub Pages)
-    const isStaticHost = window.location.hostname.endsWith(".github.io") || window.location.hostname.endsWith(".pages.dev");
+    // 2. Fallback: Local API Mode (only when running local server, not on static GitHub Pages)
+    const isStaticHost =
+      window.location.hostname.endsWith(".github.io") ||
+      window.location.hostname.endsWith(".pages.dev");
     if (!isStaticHost) {
       try {
         const me = await apiCall("/api/me");
@@ -1091,32 +1042,12 @@
       } catch (_) {}
     }
 
-    // 3. Static GitHub Pages opened directly without #state=...
-    const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
-    $("screen-unauthorized").hidden = false;
-    $("bottom-nav").hidden = true;
-    if (demoBtn) demoBtn.hidden = false;
-
-    if (tgUser && tgUser.id) {
-      $("app-icon").textContent = "🤖";
-      $("app-title").textContent = "Откройте из клавиатуры";
-      $("app-subtitle").textContent = `Telegram ID: ${tgUser.id}`;
-      $("unauth-icon").textContent = "📲";
-      $("unauth-title").textContent = "Запустите через кнопку пульта";
-      $("unauth-desc").textContent =
-        "Чтобы открыть пульт с актуальным статусом роутера без внешних портов, отправьте боту /start и нажмите кнопку «🏠 Домашний пульт» на нижней клавиатуре чата.";
-      $("unauth-user-id").textContent = tgUser.id;
-    } else {
-      $("app-icon").textContent = "✅";
-      $("app-title").textContent = "OpenWrt Hub";
-      $("app-subtitle").textContent = "Статический фронтенд готов (Serverless)";
-      $("unauth-icon").textContent = "🛡️";
-      $("unauth-title").textContent = "Статический пульт развёрнут";
-      $("unauth-desc").textContent =
-        "Эндпоинт роутера скрыт из интернета. В рабочем режиме открывайте эту страницу через кнопки в вашем Telegram-боте (бот передаёт сжатый снимок состояния в #state).";
-      $("unauth-id-box").hidden = true;
-      $("copy-unauth-id-btn").hidden = true;
-    }
+    // 3. No valid #state token -> Strictly block access
+    denyAccess(
+      "Доступ запрещён",
+      "Приложение открывается только через персональные кнопки в чате бота для добавленных пользователей.",
+      tgUser ? tgUser.id : null
+    );
   }
 
   bootstrap();

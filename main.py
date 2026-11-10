@@ -280,7 +280,9 @@ def build_bot_application():
         InlineKeyboardButton,
         InlineKeyboardMarkup,
         KeyboardButton,
+        MenuButtonDefault,
         ReplyKeyboardMarkup,
+        ReplyKeyboardRemove,
         WebAppInfo,
     )
     from telegram.ext import (
@@ -394,7 +396,8 @@ def build_bot_application():
             )
             if target:
                 await target.reply_text(
-                    "You are not authorized to use this bot. Use /get_user_id to get your user ID."
+                    "You are not authorized to use this bot. Use /get_user_id to get your user ID.",
+                    reply_markup=ReplyKeyboardRemove(),
                 )
             return False
         return True
@@ -496,7 +499,8 @@ def build_bot_application():
         else:
             await update.message.reply_text(
                 "You're not authorized yet.\n"
-                f"Share this user ID with an admin to get access: {uid}"
+                f"Share this user ID with an admin to get access: {uid}",
+                reply_markup=ReplyKeyboardRemove(),
             )
 
     async def cmd_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -889,6 +893,11 @@ def build_bot_application():
             log.info(
                 "Running in Serverless Mini App mode (no inbound HTTP port opened on router)."
             )
+        try:
+            # Ensure no global WebApp menu button is exposed to unauthorized users
+            await application.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
+        except Exception as e:
+            log.debug("Could not reset default chat menu button: %s", e)
 
     async def post_shutdown(application: Application) -> None:
         if WEBAPP_LOCAL_SERVER_ENABLED:
