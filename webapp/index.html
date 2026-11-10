@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>OpenWrt Control Hub</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <!-- Top Header -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <div class="app-badge" id="app-icon">🏠</div>
+        <div>
+          <h1 class="app-title" id="app-title">OpenWrt Hub</h1>
+          <p class="app-subtitle" id="app-subtitle">Загрузка состояния...</p>
+        </div>
+      </div>
+      <div class="top-bar-right">
+        <span class="role-pill" id="user-role-pill" hidden>User</span>
+        <button class="icon-btn" id="refresh-btn" title="Обновить данные" aria-label="Обновить">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 16h5v5"/>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast" hidden></div>
+
+    <!-- Unauthorized Screen -->
+    <main id="screen-unauthorized" class="screen" hidden>
+      <div class="card empty-state-card">
+        <div class="empty-icon">🔒</div>
+        <h2>Доступ ограничен</h2>
+        <p class="muted-text">
+          Ваш аккаунт ещё не добавлен в белый список бота. Отправьте ваш Telegram ID администратору для получения доступа:
+        </p>
+        <div class="id-showcase">
+          <span class="id-label">Ваш Telegram ID</span>
+          <code class="id-value" id="unauth-user-id">—</code>
+        </div>
+        <button class="btn btn-primary btn-block" id="copy-unauth-id-btn">
+          📋 Скопировать мой ID
+        </button>
+      </div>
+    </main>
+
+    <!-- MINI APP 1: HOME CONTROL (Wi-Fi & AdGuard) -->
+    <main id="screen-home" class="screen" hidden>
+      <!-- Guest Wi-Fi Card -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon wifi-icon">📶</span>
+            <div>
+              <h2 class="card-title">Гостевой Wi-Fi</h2>
+              <p class="card-subtitle" id="wifi-summary-subtitle">Проверка роутеров...</p>
+            </div>
+          </div>
+          <span class="status-badge" id="wifi-global-badge">—</span>
+        </div>
+
+        <div id="wifi-ssids-box" class="pill-row" hidden></div>
+
+        <div class="button-row two-col">
+          <button class="btn btn-success" id="btn-wifi-all-on">
+            ⚡ Включить везде
+          </button>
+          <button class="btn btn-secondary" id="btn-wifi-all-off">
+            🌙 Выключить везде
+          </button>
+        </div>
+
+        <div class="divider"></div>
+        <div class="sub-label">Роутеры и радиомодули</div>
+        <div id="wifi-routers-list" class="stack-list"></div>
+      </section>
+
+      <!-- AdGuard Home Card -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon adguard-icon">🛡️</span>
+            <div>
+              <h2 class="card-title">AdGuard Home</h2>
+              <p class="card-subtitle" id="adguard-summary-subtitle">DNS-фильтрация и блокировка рекламы</p>
+            </div>
+          </div>
+          <span class="status-badge" id="adguard-status-badge">—</span>
+        </div>
+
+        <!-- Timer Banner when paused -->
+        <div id="adguard-timer-banner" class="timer-banner" hidden>
+          <div>
+            <div class="timer-title">Защита временно приостановлена</div>
+            <div class="timer-countdown" id="adguard-countdown">Осталось: —</div>
+          </div>
+          <button class="btn btn-sm btn-success" id="btn-adguard-resume-banner">Включить</button>
+        </div>
+
+        <!-- DNS Stats Grid -->
+        <div id="adguard-stats-grid" class="stats-grid" hidden>
+          <div class="stat-box">
+            <span class="stat-value" id="ag-stat-queries">0</span>
+            <span class="stat-label">DNS-запросов</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="ag-stat-blocked">0</span>
+            <span class="stat-label">Заблокировано</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="ag-stat-percent">0%</span>
+            <span class="stat-label">Доля блока</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="ag-stat-latency">0 мс</span>
+            <span class="stat-label">Отклик DNS</span>
+          </div>
+        </div>
+
+        <!-- Controls -->
+        <div id="adguard-controls">
+          <div class="sub-label">Управление защитой</div>
+          <div class="button-row four-col">
+            <button class="btn btn-success" id="btn-ag-on">Вкл</button>
+            <button class="btn btn-warning-soft" data-ag-off="10">⏸ 10м</button>
+            <button class="btn btn-warning-soft" data-ag-off="30">⏸ 30м</button>
+            <button class="btn btn-warning-soft" data-ag-off="60">⏸ 60м</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- MINI APP 2: NETWORK & DEVICES (Routers, WOL, Clients) -->
+    <main id="screen-network" class="screen" hidden>
+      <!-- Routers Monitoring -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon router-icon">📡</span>
+            <div>
+              <h2 class="card-title">Состояние роутеров</h2>
+              <p class="card-subtitle">Ресурсы OpenWrt, Uptime и перезагрузка</p>
+            </div>
+          </div>
+        </div>
+        <div id="network-routers-list" class="stack-list"></div>
+      </section>
+
+      <!-- Wake-on-LAN -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon wol-icon">⚡</span>
+            <div>
+              <h2 class="card-title">Wake-on-LAN</h2>
+              <p class="card-subtitle">Удаленное пробуждение компьютеров и серверов</p>
+            </div>
+          </div>
+        </div>
+        <div id="wol-hosts-list" class="stack-list"></div>
+      </section>
+
+      <!-- Connected Clients -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon clients-icon">💻</span>
+            <div>
+              <h2 class="card-title">Устройства в сети</h2>
+              <p class="card-subtitle" id="clients-count-subtitle">Активные DHCP и ARP клиенты</p>
+            </div>
+          </div>
+          <div class="filter-pills">
+            <button class="pill-btn active" data-client-filter="online">Онлайн</button>
+            <button class="pill-btn" data-client-filter="all">Все</button>
+          </div>
+        </div>
+
+        <div class="search-box">
+          <input
+            type="search"
+            id="client-search-input"
+            class="input-field"
+            placeholder="Поиск по имени, IP или MAC..."
+            autocomplete="off"
+          />
+        </div>
+
+        <div id="network-clients-list" class="clients-list"></div>
+      </section>
+    </main>
+
+    <!-- MINI APP 3: ACCESS & ADMIN (Users & Profile) -->
+    <main id="screen-admin" class="screen" hidden>
+      <!-- Current Profile -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon profile-icon">👤</span>
+            <div>
+              <h2 class="card-title">Ваш профиль</h2>
+              <p class="card-subtitle" id="profile-name-subtitle">Администратор системы</p>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-secondary" id="copy-my-id-btn">ID: <span id="my-uid-text">—</span></button>
+        </div>
+      </section>
+
+      <!-- Whitelist Management -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon admin-icon">🔐</span>
+            <div>
+              <h2 class="card-title">Белый список доступа</h2>
+              <p class="card-subtitle">Пользователи Telegram, имеющие доступ к пульту</p>
+            </div>
+          </div>
+          <span class="status-badge status-neutral" id="users-count-badge">0</span>
+        </div>
+
+        <form id="add-user-form" class="inline-form">
+          <input
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            id="new-user-id-input"
+            class="input-field"
+            placeholder="Введите Telegram ID (например, 123456789)"
+            required
+          />
+          <button type="submit" class="btn btn-primary">＋ Добавить</button>
+        </form>
+
+        <div class="divider"></div>
+        <div id="admin-users-list" class="stack-list"></div>
+      </section>
+    </main>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal-backdrop" hidden>
+      <div class="modal-dialog">
+        <h3 id="confirm-title" class="modal-title">Подтверждение</h3>
+        <p id="confirm-message" class="modal-message"></p>
+        <div class="button-row two-col">
+          <button class="btn btn-secondary" id="confirm-cancel-btn">Отмена</button>
+          <button class="btn btn-danger" id="confirm-ok-btn">Подтвердить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom Navigation Bar (Logical App Switcher) -->
+    <nav id="bottom-nav" class="bottom-nav" hidden>
+      <button class="nav-tab active" data-tab="home">
+        <span class="nav-icon">🏠</span>
+        <span class="nav-label">Пульт</span>
+      </button>
+      <button class="nav-tab" data-tab="network" id="nav-tab-network" hidden>
+        <span class="nav-icon">📡</span>
+        <span class="nav-label">Сеть и WOL</span>
+      </button>
+      <button class="nav-tab" data-tab="admin" id="nav-tab-admin" hidden>
+        <span class="nav-icon">🔐</span>
+        <span class="nav-label">Доступ</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+python-telegram-bot>=20,<22
+requests>=2.31
+pyyaml>=6.0
+wakeonlan>=3.0

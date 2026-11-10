@@ -1,0 +1,35 @@
+bot_token: ""
+admin_user_ids: []                            # Telegram user IDs with full admin rights (monitoring, reboot, WOL, users)
+
+# Telegram Mini App (WebApp) configuration
+# Default mode: 100% Serverless (ZERO open ports on the router!)
+# Host the static ./webapp folder on GitHub Pages / Cloudflare Pages and set static_url below.
+webapp:
+  static_url: "https://YOUR_GITHUB_USERNAME.github.io/telegram-bot-openwrt/"
+  enabled: false                              # Keep false so NO HTTP port is opened on the router
+  host: "127.0.0.1"                           # Used only if enabled: true (local LAN/dev server)
+  port: 8080
+  dev_mode: false
+
+routers:
+  main_router:
+    ip: "192.168.1.1"
+    username: "root"
+    password: ""                              # required
+    verify_tls: false
+    guest_network_device: "wifinet5, wifinet6"
+
+adguard:
+  base_url: "https://192.168.1.1/adguard-home"
+  username: ""
+  password: ""
+  verify_tls: false                           
+  default_duration_ms: 600000                 # 10 minutes
+  timeout:
+    connect: 5
+    read: 10
+
+wake_on_lan_hosts:
+  home_pc:
+    mac: "00:11:22:33:44:55"
+    ip: "192.168.1.255"
