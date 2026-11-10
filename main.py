@@ -14,7 +14,11 @@ from wakeonlan import send_magic_packet
 from adguard_client import AdGuardClient, AdGuardConfig, AdGuardError
 from auth import AccessManager
 from openwrt_client import OpenWrtClient, RouterConfig, OpenWrtError
-from state_codec import build_serverless_snapshot, encode_state_token
+from state_codec import (
+    build_serverless_snapshot,
+    encode_state_token,
+    split_snapshot_into_app_tokens,
+)
 from unifi_client import UniFiClient, UniFiConfig, UniFiError
 from webapp_server import WebAppServer
 
@@ -171,7 +175,11 @@ def _format_user_list() -> str:
     return "Authorized users:\n" + "\n".join(lines)
 
 
-async def build_user_state_token(user, bot_username: str = "") -> str:
+async def build_user_state_tokens(
+    user,
+    bot_username: str = "",
+    max_per_button_len: int = 700,
+) -> Dict[str, str]:
     snapshot = await build_serverless_snapshot(
         user_id=user.id,
         first_name=user.first_name or "",
@@ -184,7 +192,10 @@ async def build_user_state_token(user, bot_username: str = "") -> str:
         bot_username=bot_username,
         unifi=UNIFI,
     )
-    return encode_state_token(snapshot)
+    return split_snapshot_into_app_tokens(
+        snapshot,
+        max_per_button_len=max_per_button_len,
+    )
 
 
 async def execute_miniapp_command(user_id: int, payload: Dict[str, Any]) -> str:
@@ -363,6 +374,7 @@ def build_bot_application():
         ReplyKeyboardRemove,
         WebAppInfo,
     )
+    from telegram.error import BadRequest
     from telegram.ext import (
         Application,
         ApplicationBuilder,
@@ -385,15 +397,18 @@ def build_bot_application():
         sep = "&" if "?" in WEBAPP_STATIC_URL else "?"
         return f"{WEBAPP_STATIC_URL}{sep}app={app_name}&state={state_token}"
 
-    def build_reply_keyboard_from_token(user_id: int, state_token: str) -> Optional[ReplyKeyboardMarkup]:
-        if not WEBAPP_STATIC_URL.startswith("https://"):
+    def build_reply_keyboard_from_tokens(
+        user_id: int, tokens: Dict[str, str]
+    ) -> Optional[ReplyKeyboardMarkup]:
+        if not WEBAPP_STATIC_URL.startswith("https://") or not tokens:
             return None
         is_admin = access_manager.is_admin(user_id)
+        home_tok = tokens.get("home", "")
         rows: List[List[KeyboardButton]] = [
             [
                 KeyboardButton(
                     "🏠 Домашний пульт",
-                    web_app=WebAppInfo(url=_app_url("home", state_token)),
+                    web_app=WebAppInfo(url=_app_url("home", home_tok)),
                 )
             ]
         ]
@@ -401,20 +416,24 @@ def build_bot_application():
             admin_row = [
                 KeyboardButton(
                     "📡 Сеть и WOL",
-                    web_app=WebAppInfo(url=_app_url("network", state_token)),
+                    web_app=WebAppInfo(
+                        url=_app_url("network", tokens.get("network", home_tok))
+                    ),
                 ),
             ]
-            if UNIFI is not None:
+            if UNIFI is not None and "unifi" in tokens:
                 admin_row.append(
                     KeyboardButton(
                         "🛜 UniFi",
-                        web_app=WebAppInfo(url=_app_url("unifi", state_token)),
+                        web_app=WebAppInfo(url=_app_url("unifi", tokens["unifi"])),
                     )
                 )
             admin_row.append(
                 KeyboardButton(
                     "🔐 Доступ",
-                    web_app=WebAppInfo(url=_app_url("admin", state_token)),
+                    web_app=WebAppInfo(
+                        url=_app_url("admin", tokens.get("admin", home_tok))
+                    ),
                 )
             )
             rows.append(admin_row)
@@ -426,22 +445,48 @@ def build_bot_application():
         )
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-    async def build_serverless_reply_keyboard(user, bot_username: str = "") -> Optional[ReplyKeyboardMarkup]:
+    async def safe_reply_with_keyboard(
+        message,
+        text: str,
+        user,
+        bot_username: str = "",
+        tokens: Optional[Dict[str, str]] = None,
+    ):
         if not WEBAPP_STATIC_URL.startswith("https://"):
+            await message.reply_text(text)
             return None
-        state_token = await build_user_state_token(user, bot_username=bot_username)
-        return build_reply_keyboard_from_token(user.id, state_token)
+        if tokens is None:
+            tokens = await build_user_state_tokens(
+                user, bot_username=bot_username, max_per_button_len=650
+            )
+        reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
+        try:
+            await message.reply_text(text, reply_markup=reply_kb)
+            return tokens
+        except BadRequest as e:
+            if "too long" in str(e).lower():
+                log.warning("Reply markup exceeded limit (%s), retrying with compact budget...", e)
+                tokens = await build_user_state_tokens(
+                    user, bot_username=bot_username, max_per_button_len=350
+                )
+                reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
+                await message.reply_text(text, reply_markup=reply_kb)
+                return tokens
+            raise
 
-    def build_inline_menu_markup(user_id: int, state_token: Optional[str] = None) -> InlineKeyboardMarkup:
+    def build_inline_menu_markup(
+        user_id: int, tokens: Optional[Dict[str, str]] = None
+    ) -> InlineKeyboardMarkup:
         is_admin = access_manager.is_admin(user_id)
         button_rows: List[List[InlineKeyboardButton]] = []
 
-        if WEBAPP_STATIC_URL.startswith("https://") and state_token:
+        if WEBAPP_STATIC_URL.startswith("https://") and tokens:
+            home_tok = tokens.get("home", "")
             button_rows.append(
                 [
                     InlineKeyboardButton(
                         "🏠 Открыть Домашний пульт (App)",
-                        web_app=WebAppInfo(url=_app_url("home", state_token)),
+                        web_app=WebAppInfo(url=_app_url("home", home_tok)),
                     )
                 ]
             )
@@ -449,20 +494,24 @@ def build_bot_application():
                 inline_admin_row = [
                     InlineKeyboardButton(
                         "📡 Сеть и WOL (App)",
-                        web_app=WebAppInfo(url=_app_url("network", state_token)),
+                        web_app=WebAppInfo(
+                            url=_app_url("network", tokens.get("network", home_tok))
+                        ),
                     ),
                 ]
-                if UNIFI is not None:
+                if UNIFI is not None and "unifi" in tokens:
                     inline_admin_row.append(
                         InlineKeyboardButton(
                             "🛜 UniFi (App)",
-                            web_app=WebAppInfo(url=_app_url("unifi", state_token)),
+                            web_app=WebAppInfo(url=_app_url("unifi", tokens["unifi"])),
                         )
                     )
                 inline_admin_row.append(
                     InlineKeyboardButton(
                         "🔐 Доступ (App)",
-                        web_app=WebAppInfo(url=_app_url("admin", state_token)),
+                        web_app=WebAppInfo(
+                            url=_app_url("admin", tokens.get("admin", home_tok))
+                        ),
                     )
                 )
                 button_rows.append(inline_admin_row)
@@ -522,46 +571,39 @@ def build_bot_application():
                     base64.urlsafe_b64decode((b64_part + pad).encode("ascii")).decode("utf-8")
                 )
                 result_msg = await execute_miniapp_command(user.id, payload)
-                reply_kb = await build_serverless_reply_keyboard(user, bot_username)
-                await update.message.reply_text(result_msg, reply_markup=reply_kb)
+                await safe_reply_with_keyboard(update.message, result_msg, user, bot_username)
                 return
             except Exception as e:
                 log.warning("Failed to parse deep-link cmd: %s", e)
 
-        state_token = (
-            await build_user_state_token(user, bot_username=bot_username)
-            if WEBAPP_STATIC_URL.startswith("https://")
-            else None
-        )
-        reply_kb = (
-            build_reply_keyboard_from_token(user.id, state_token)
-            if state_token
-            else None
-        )
-        if reply_kb:
-            await update.message.reply_text(
+        tokens = None
+        if WEBAPP_STATIC_URL.startswith("https://"):
+            tokens = await safe_reply_with_keyboard(
+                update.message,
                 "🔒 Пульт готов (работает без открытых портов на роутере).\n"
                 "Откройте нужное приложение кнопкой на нижней клавиатуре или в сообщении:",
-                reply_markup=reply_kb,
+                user,
+                bot_username,
             )
         await update.message.reply_text(
             "Меню управления:",
-            reply_markup=build_inline_menu_markup(user.id, state_token),
+            reply_markup=build_inline_menu_markup(user.id, tokens),
         )
 
     async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await ensure_authorized(update):
             return
         user = update.effective_user
-        reply_kb = await build_serverless_reply_keyboard(user, context.bot.username or "")
-        if not reply_kb:
+        if not WEBAPP_STATIC_URL.startswith("https://"):
             await update.message.reply_text(
                 "Укажите `webapp.static_url` (например, ссылку на ваш GitHub Pages) в `settings.yaml`."
             )
             return
-        await update.message.reply_text(
+        await safe_reply_with_keyboard(
+            update.message,
             "🔄 Снимок состояния обновлён! Выберите приложение на нижней клавиатуре:",
-            reply_markup=reply_kb,
+            user,
+            context.bot.username or "",
         )
 
     async def on_webapp_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,8 +622,9 @@ def build_bot_application():
             return
 
         result_text = await execute_miniapp_command(user.id, payload)
-        reply_kb = await build_serverless_reply_keyboard(user, context.bot.username or "")
-        await update.message.reply_text(result_text, reply_markup=reply_kb)
+        await safe_reply_with_keyboard(
+            update.message, result_text, user, context.bot.username or ""
+        )
 
     async def cmd_get_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         uid = update.effective_user.id

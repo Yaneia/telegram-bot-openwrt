@@ -1340,6 +1340,7 @@
   function denyAccess(title, description, tgUserId = null) {
     $("screen-home").hidden = true;
     $("screen-network").hidden = true;
+    $("screen-unifi").hidden = true;
     $("screen-admin").hidden = true;
     $("bottom-nav").hidden = true;
     $("refresh-btn").hidden = true;
@@ -1383,7 +1384,7 @@
     rolePill.textContent = state.user.role === "admin" ? "Admin" : "User";
     rolePill.classList.toggle("role-admin", state.user.role === "admin");
 
-    if (state.user.is_admin) {
+    if (state.user.is_admin && !state.scopedApp) {
       $("nav-tab-network").hidden = false;
       $("nav-tab-unifi").hidden = !(state.unifi && state.unifi.configured);
       $("nav-tab-admin").hidden = false;
@@ -1392,7 +1393,7 @@
       $("bottom-nav").hidden = true;
     }
 
-    switchTab(initialTab);
+    switchTab(state.scopedApp || initialTab);
   }
 
   async function bootstrap() {
@@ -1433,6 +1434,7 @@
         }
 
         state.serverless = true;
+        state.scopedApp = snapshot.scope || null;
         state.snapshotTs = snapshot.ts || 0;
         state.botUsername = snapshot.bot_username || "";
         state.user = snapUser;
