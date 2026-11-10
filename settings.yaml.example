@@ -7,6 +7,8 @@ admin_user_ids: []                            # Telegram user IDs with full admi
 webapp:
   static_url: "https://yaneia.github.io/telegram-bot-openwrt/"
   enabled: false                              # Keep false so NO HTTP port is opened on the router
+  chat_menu_enabled: false                    # false = hide legacy inline text menu in chat (use Mini Apps only)
+  rpc_bridge: true                            # true = execute button clicks in background without closing Mini App or spamming chat
   host: "127.0.0.1"                           # Used only if enabled: true (local LAN/dev server)
   port: 8080
   dev_mode: false

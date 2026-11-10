@@ -185,10 +185,247 @@
     return { user, platform, isInsideTelegram };
   }
 
+  // ---------------- Background Encrypted RPC Bridge (No App Close / No Chat Spam) ----------------
+  async function sha256Bytes(uint8Arr) {
+    const hashBuf = await crypto.subtle.digest("SHA-256", uint8Arr);
+    return new Uint8Array(hashBuf);
+  }
+
+  function bytesToHex(bytes) {
+    let hex = "";
+    for (let i = 0; i < bytes.length; i++) {
+      hex += bytes[i].toString(16).padStart(2, "0");
+    }
+    return hex;
+  }
+
+  async function xorKeystream(dataBytes, keyStr, nonceStr) {
+    const out = new Uint8Array(dataBytes.length);
+    const blockCount = Math.ceil(dataBytes.length / 32);
+    const enc = new TextEncoder();
+    for (let i = 0; i < blockCount; i++) {
+      const seed = enc.encode(`${keyStr}:${nonceStr}:${i}`);
+      const ks = await sha256Bytes(seed);
+      const start = i * 32;
+      const end = Math.min(start + 32, dataBytes.length);
+      for (let j = start; j < end; j++) {
+        out[j] = dataBytes[j] ^ ks[j - start];
+      }
+    }
+    return out;
+  }
+
+  async function encryptRpcPacket(innerText, keyStr) {
+    const rand = new Uint8Array(8);
+    crypto.getRandomValues(rand);
+    const nonceStr = bytesToHex(rand);
+    const enc = new TextEncoder();
+    const plainBytes = enc.encode(innerText);
+    const cipherBytes = await xorKeystream(plainBytes, keyStr, nonceStr);
+    const prefixBytes = enc.encode(`${keyStr}:${nonceStr}:mac:`);
+    const macInput = new Uint8Array(prefixBytes.length + cipherBytes.length);
+    macInput.set(prefixBytes, 0);
+    macInput.set(cipherBytes, prefixBytes.length);
+    const macHash = await sha256Bytes(macInput);
+    const macHex = bytesToHex(macHash).slice(0, 24);
+    return `e1.${nonceStr}.${macHex}.${uint8ArrayToBase64Url(cipherBytes)}`;
+  }
+
+  async function decryptRpcPacket(packet, keyStr) {
+    const parts = String(packet || "").trim().split(".");
+    if (parts.length !== 4 || parts[0] !== "e1") return null;
+    const [, nonceStr, macHex, b64Cipher] = parts;
+    const cipherBytes = base64UrlToUint8Array(b64Cipher);
+    const enc = new TextEncoder();
+    const prefixBytes = enc.encode(`${keyStr}:${nonceStr}:mac:`);
+    const macInput = new Uint8Array(prefixBytes.length + cipherBytes.length);
+    macInput.set(prefixBytes, 0);
+    macInput.set(cipherBytes, prefixBytes.length);
+    const macHash = await sha256Bytes(macInput);
+    const expectedMac = bytesToHex(macHash).slice(0, 24);
+    if (macHex !== expectedMac) return null;
+    const plainBytes = await xorKeystream(cipherBytes, keyStr, nonceStr);
+    return new TextDecoder("utf-8").decode(plainBytes);
+  }
+
+  function applySnapshotToState(snap) {
+    if (!snap) return;
+    if (snap.ts) state.snapshotTs = snap.ts;
+    if (snap.wifi !== undefined) state.wifi = snap.wifi;
+    if (snap.adguard !== undefined) state.adguard = snap.adguard;
+    if (snap.routers !== undefined) state.routers = snap.routers || [];
+    if (snap.clients !== undefined) state.clients = snap.clients || [];
+    if (snap.wol_hosts !== undefined) state.wolHosts = snap.wol_hosts || [];
+    if (snap.unifi !== undefined) state.unifi = snap.unifi;
+    if (snap.admin_users !== undefined) state.adminUsers = snap.admin_users || [];
+
+    // Unlock full bottom tab navigation once complete snapshot arrives via RPC
+    if (state.user && state.user.is_admin && snap.routers !== undefined) {
+      state.scopedApp = null;
+      $("nav-tab-network").hidden = false;
+      $("nav-tab-unifi").hidden = !(state.unifi && state.unifi.configured);
+      $("nav-tab-admin").hidden = false;
+      $("bottom-nav").hidden = false;
+    }
+
+    const age = formatSnapshotAge(state.snapshotTs);
+    $("app-subtitle").textContent = `🔒 Без эндпоинта${age ? " • " + age : ""}`;
+    if (state.activeTab === "home") renderHome();
+    else if (state.activeTab === "network") renderNetwork();
+    else if (state.activeTab === "unifi") renderUnifi();
+    else if (state.activeTab === "admin") renderAdmin();
+  }
+
+  function waitForRpcReply(relayBase, resTopic, timeoutMs = 14000) {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let es = null;
+      const pollTimers = [];
+
+      const finish = (err, msg) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(mainTimer);
+        pollTimers.forEach((t) => clearTimeout(t));
+        if (es) {
+          try {
+            es.close();
+          } catch (_) {}
+        }
+        if (err) reject(err);
+        else resolve(msg);
+      };
+
+      const mainTimer = setTimeout(() => {
+        finish(new Error("Превышено время ожидания ответа от роутера"));
+      }, timeoutMs);
+
+      // 1. Real-time SSE stream
+      if (typeof EventSource !== "undefined") {
+        try {
+          es = new EventSource(`${relayBase}/${resTopic}/sse?since=all`);
+          es.onmessage = (ev) => {
+            try {
+              const data = JSON.parse(ev.data);
+              if (data && data.message && String(data.message).startsWith("e1.")) {
+                finish(null, data.message);
+              }
+            } catch (_) {}
+          };
+        } catch (_) {}
+      }
+
+      // 2. Parallel HTTP poll fallback (in case mobile network buffers SSE)
+      const pollOnce = async () => {
+        if (settled) return;
+        try {
+          const resp = await fetch(`${relayBase}/${resTopic}/json?poll=1&since=all`);
+          if (!resp.ok) return;
+          const text = await resp.text();
+          const lines = text.split("\n").filter(Boolean);
+          for (const line of lines) {
+            try {
+              const obj = JSON.parse(line);
+              if (obj && obj.message && String(obj.message).startsWith("e1.")) {
+                finish(null, obj.message);
+                return;
+              }
+            } catch (_) {}
+          }
+        } catch (_) {}
+      };
+      pollTimers.push(setTimeout(pollOnce, 1100));
+      pollTimers.push(setTimeout(pollOnce, 2600));
+      pollTimers.push(setTimeout(pollOnce, 5000));
+      pollTimers.push(setTimeout(pollOnce, 8500));
+    });
+  }
+
+  async function executeRpcCommand(cmdPayload, options = {}) {
+    if (!state.rpc || !state.rpc.topic || !state.rpc.key) {
+      return false;
+    }
+    const silent = Boolean(options.silent);
+    const refreshBtn = $("refresh-btn");
+    if (refreshBtn) refreshBtn.classList.add("spinning");
+    if (!silent) {
+      haptic("light");
+      showToast("⏳ Выполняется...");
+    }
+
+    try {
+      const randBytes = new Uint8Array(6);
+      crypto.getRandomValues(randBytes);
+      const reqId = bytesToHex(randBytes);
+      const relayBase = (state.rpc.relay || "https://ntfy.sh").replace(/\/+$/, "");
+      const resTopic = `owrt_r_${reqId}`;
+
+      const fullReq = Object.assign({}, cmdPayload, {
+        req_id: reqId,
+        ts: Math.floor(Date.now() / 1000),
+        user_id: state.user ? state.user.user_id : 0,
+        first_name: state.user ? state.user.first_name || "" : "",
+        username: state.user ? state.user.username || "" : "",
+      });
+
+      const encryptedReq = await encryptRpcPacket(
+        JSON.stringify(fullReq),
+        state.rpc.key
+      );
+
+      // Start listening before POST so fast replies are never missed
+      const replyPromise = waitForRpcReply(relayBase, resTopic, 14000);
+
+      await fetch(`${relayBase}/${state.rpc.topic}`, {
+        method: "POST",
+        body: encryptedReq,
+      });
+
+      const encryptedReply = await replyPromise;
+      const compressedToken = await decryptRpcPacket(
+        encryptedReply,
+        state.rpc.key
+      );
+      if (!compressedToken) {
+        throw new Error("Не удалось расшифровать ответ от роутера");
+      }
+      const res = await decodeStateToken(compressedToken);
+      if (!res || res.ok === false) {
+        throw new Error((res && res.error) || "Ошибка выполнения команды");
+      }
+
+      if (res.snapshot) {
+        applySnapshotToState(res.snapshot);
+      }
+      if (!silent) {
+        haptic("success");
+        showToast(res.message || "✅ Обновлено");
+      }
+      return true;
+    } catch (err) {
+      if (!silent) {
+        haptic("error");
+        showToast(err.message || "Ошибка связи с роутером");
+      }
+      return false;
+    } finally {
+      if (refreshBtn) refreshBtn.classList.remove("spinning");
+    }
+  }
+
   // ---------------- Serverless Action Dispatcher ----------------
   function sendServerlessCommand(cmdPayload) {
+    // 1. Primary path: Background Encrypted RPC Bridge (stays inside Mini App, ZERO chat messages!)
+    if (state.rpc && state.rpc.topic && state.rpc.key) {
+      const action = cmdPayload && cmdPayload.action === "refresh_state"
+        ? Object.assign({}, cmdPayload, { action: "get_state" })
+        : cmdPayload;
+      executeRpcCommand(action);
+      return true;
+    }
+
+    // 2. Legacy Fallback if RPC bridge is disabled in settings.yaml
     const jsonStr = JSON.stringify(cmdPayload);
-    // 1. Primary path: Telegram.WebApp.sendData (works when opened from ReplyKeyboardMarkup)
     const isInlineMode = Boolean(tg && tg.initDataUnsafe && tg.initDataUnsafe.query_id);
     if (tg && typeof tg.sendData === "function" && !isInlineMode) {
       haptic("success");
@@ -196,7 +433,6 @@
       return true;
     }
 
-    // 2. Fallback path: Deep-link to Bot if opened from an Inline Keyboard button
     if (state.botUsername) {
       const encoded = uint8ArrayToBase64Url(new TextEncoder().encode(jsonStr));
       const deepLink = `https://t.me/${state.botUsername}?start=cmd_${encoded}`;
@@ -209,7 +445,7 @@
       return true;
     }
 
-    showToast("Откройте пульт через нижнюю кнопку клавиатуры в чате с ботом для отправки команды.");
+    showToast("Не удалось отправить команду.");
     return false;
   }
 
@@ -1077,7 +1313,11 @@
     if (!u || !u.ok) return;
 
     const allClients = u.clients || [];
-    $("unifi-clients-subtitle").textContent = `Активных клиентов в UniFi: ${allClients.length}`;
+    const totalCount = u.total_clients !== undefined ? u.total_clients : allClients.length;
+    $("unifi-clients-subtitle").textContent =
+      totalCount > allClients.length
+        ? `Активных клиентов в UniFi: ${totalCount} (показано ${allClients.length}, подгрузка...)`
+        : `Активных клиентов в UniFi: ${allClients.length}`;
 
     const q = (state.unifiClientSearch || "").trim().toLowerCase();
     const filtered = allClients.filter((c) => {
@@ -1435,6 +1675,7 @@
 
         state.serverless = true;
         state.scopedApp = snapshot.scope || null;
+        state.rpc = snapshot.rpc || null;
         state.snapshotTs = snapshot.ts || 0;
         state.botUsername = snapshot.bot_username || "";
         state.user = snapUser;
@@ -1446,6 +1687,11 @@
         state.unifi = snapshot.unifi || null;
         state.adminUsers = snapshot.admin_users || [];
         applyUserRoleAndBoot(initialTab);
+
+        // Automatically sync full live state (and untruncated client lists) in background via RPC
+        if (state.rpc && state.rpc.topic && state.rpc.key) {
+          executeRpcCommand({ action: "get_state" }, { silent: true });
+        }
         return;
       } catch (err) {
         denyAccess(

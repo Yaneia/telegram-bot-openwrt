@@ -14,6 +14,7 @@ from wakeonlan import send_magic_packet
 from adguard_client import AdGuardClient, AdGuardConfig, AdGuardError
 from auth import AccessManager
 from openwrt_client import OpenWrtClient, RouterConfig, OpenWrtError
+from rpc_bridge import ServerlessRpcBridge, derive_rpc_credentials
 from state_codec import (
     build_serverless_snapshot,
     encode_state_token,
@@ -126,6 +127,13 @@ WEBAPP_DEV_MODE: bool = bool(
 WEBAPP_DEV_USER_ID: Optional[int] = (
     int(webapp_cfg["dev_user_id"]) if webapp_cfg.get("dev_user_id") else None
 )
+CHAT_MENU_ENABLED: bool = bool(
+    webapp_cfg.get("chat_menu_enabled", settings.get("chat_menu_enabled", False))
+)
+RPC_BRIDGE_ENABLED: bool = bool(webapp_cfg.get("rpc_bridge", True))
+RPC_CREDS: Optional[Dict[str, str]] = (
+    derive_rpc_credentials(BOT_TOKEN) if RPC_BRIDGE_ENABLED else None
+)
 
 # routers: { name: OpenWrtClient }
 router_clients: Dict[str, OpenWrtClient] = {
@@ -178,7 +186,7 @@ def _format_user_list() -> str:
 async def build_user_state_tokens(
     user,
     bot_username: str = "",
-    max_per_button_len: int = 700,
+    max_per_button_len: int = 900,
 ) -> Dict[str, str]:
     snapshot = await build_serverless_snapshot(
         user_id=user.id,
@@ -191,11 +199,49 @@ async def build_user_state_tokens(
         executor=_executor,
         bot_username=bot_username,
         unifi=UNIFI,
+        rpc_creds=RPC_CREDS,
     )
     return split_snapshot_into_app_tokens(
         snapshot,
         max_per_button_len=max_per_button_len,
     )
+
+
+async def handle_rpc_request(req_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handle background RPC requests from the Mini App so button clicks never close the app
+    and never post messages to the Telegram chat, and full client lists are returned without URL limits.
+    """
+    user_id = int(req_data.get("user_id") or 0)
+    if not access_manager.is_authorized(user_id):
+        return {"ok": False, "error": "Нет доступа."}
+
+    action = str(req_data.get("action") or "")
+    first_name = str(req_data.get("first_name") or "")
+    username = str(req_data.get("username") or "")
+
+    msg = ""
+    if action and action != "get_state":
+        msg = await execute_miniapp_command(user_id, req_data)
+
+    fresh_snapshot = await build_serverless_snapshot(
+        user_id=user_id,
+        first_name=first_name,
+        username=username,
+        access=access_manager,
+        router_clients=router_clients,
+        adguard=ADGUARD,
+        wol_hosts=wake_on_lan_hosts,
+        executor=_executor,
+        bot_username="",
+        unifi=UNIFI,
+        rpc_creds=RPC_CREDS,
+    )
+    return {
+        "ok": True,
+        "message": msg,
+        "snapshot": fresh_snapshot,
+    }
 
 
 async def execute_miniapp_command(user_id: int, payload: Dict[str, Any]) -> str:
@@ -437,12 +483,10 @@ def build_bot_application():
                 )
             )
             rows.append(admin_row)
-        rows.append(
-            [
-                KeyboardButton("🔄 Обновить пульт"),
-                KeyboardButton("📋 Меню в чате"),
-            ]
-        )
+        util_row = [KeyboardButton("🔄 Обновить пульт")]
+        if CHAT_MENU_ENABLED:
+            util_row.append(KeyboardButton("📋 Меню в чате"))
+        rows.append(util_row)
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
     async def safe_reply_with_keyboard(
@@ -457,7 +501,7 @@ def build_bot_application():
             return None
         if tokens is None:
             tokens = await build_user_state_tokens(
-                user, bot_username=bot_username, max_per_button_len=650
+                user, bot_username=bot_username, max_per_button_len=900
             )
         reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
         try:
@@ -467,7 +511,7 @@ def build_bot_application():
             if "too long" in str(e).lower():
                 log.warning("Reply markup exceeded limit (%s), retrying with compact budget...", e)
                 tokens = await build_user_state_tokens(
-                    user, bot_username=bot_username, max_per_button_len=350
+                    user, bot_username=bot_username, max_per_button_len=550
                 )
                 reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
                 await message.reply_text(text, reply_markup=reply_kb)
@@ -581,14 +625,15 @@ def build_bot_application():
             tokens = await safe_reply_with_keyboard(
                 update.message,
                 "🔒 Пульт готов (работает без открытых портов на роутере).\n"
-                "Откройте нужное приложение кнопкой на нижней клавиатуре или в сообщении:",
+                "Откройте нужное приложение кнопкой на нижней клавиатуре:",
                 user,
                 bot_username,
             )
-        await update.message.reply_text(
-            "Меню управления:",
-            reply_markup=build_inline_menu_markup(user.id, tokens),
-        )
+        if CHAT_MENU_ENABLED or not WEBAPP_STATIC_URL.startswith("https://"):
+            await update.message.reply_text(
+                "Меню управления:",
+                reply_markup=build_inline_menu_markup(user.id, tokens),
+            )
 
     async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not await ensure_authorized(update):
@@ -1023,13 +1068,23 @@ def build_bot_application():
 
         context.user_data.pop("awaiting_admin_action", None)
 
+    rpc_bridge_instance: Optional[ServerlessRpcBridge] = None
+
     async def post_init(application: Application) -> None:
+        nonlocal rpc_bridge_instance
         if WEBAPP_LOCAL_SERVER_ENABLED:
             await webapp_server.start()
         else:
             log.info(
                 "Running in Serverless Mini App mode (no inbound HTTP port opened on router)."
             )
+        if RPC_BRIDGE_ENABLED:
+            rpc_bridge_instance = ServerlessRpcBridge(
+                bot_token=BOT_TOKEN,
+                loop=asyncio.get_running_loop(),
+                handle_rpc_Async=handle_rpc_request,
+            )
+            rpc_bridge_instance.start()
         try:
             # Ensure no global WebApp menu button is exposed to unauthorized users
             await application.bot.set_chat_menu_button(menu_button=MenuButtonDefault())
@@ -1037,6 +1092,8 @@ def build_bot_application():
             log.debug("Could not reset default chat menu button: %s", e)
 
     async def post_shutdown(application: Application) -> None:
+        if rpc_bridge_instance is not None:
+            rpc_bridge_instance.stop()
         if WEBAPP_LOCAL_SERVER_ENABLED:
             await webapp_server.stop()
 

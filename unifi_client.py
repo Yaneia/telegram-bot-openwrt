@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Tuple
@@ -7,6 +8,8 @@ import requests
 import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+log = logging.getLogger("unifi")
 
 
 class UniFiError(Exception):
@@ -57,6 +60,7 @@ class UniFiClient:
         self._is_unifi_os: Optional[bool] = cfg.is_unifi_os
         self._csrf_token: Optional[str] = None
         self._logged_in_at: float = 0.0
+        self._site_verified: bool = False
 
     def _headers(self) -> Dict[str, str]:
         hdrs = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -184,13 +188,71 @@ class UniFiClient:
         wlans.sort(key=lambda x: (not x["is_guest"], x["name"].lower()))
         return wlans
 
+    def _raw_url(self, path: str) -> str:
+        prefix = "/proxy/network" if self._is_unifi_os is not False else ""
+        clean = path.lstrip("/")
+        return f"{self.base_url}{prefix}/{clean}"
+
+    def _ensure_site_resolved(self) -> None:
+        if self._site_verified:
+            return
+        self._site_verified = True
+        try:
+            resp = self.session.get(
+                self._raw_url("api/self/sites"),
+                headers=self._headers(),
+                timeout=self.cfg.timeout,
+            )
+            if resp.status_code == 200 and resp.text:
+                body = resp.json()
+                sites = body.get("data") if isinstance(body, dict) else body
+                if isinstance(sites, list) and sites:
+                    names = [str(s.get("name") or "") for s in sites if isinstance(s, dict)]
+                    if self.cfg.site not in names:
+                        # Check if user passed site 'desc' instead of internal 'name', or fall back to first site
+                        matched = next(
+                            (
+                                str(s.get("name"))
+                                for s in sites
+                                if isinstance(s, dict)
+                                and str(s.get("desc") or "").lower() == self.cfg.site.lower()
+                            ),
+                            names[0] if names else self.cfg.site,
+                        )
+                        if matched:
+                            log.info("UniFi resolved site '%s' -> '%s'", self.cfg.site, matched)
+                            self.cfg.site = matched
+        except Exception as e:
+            log.debug("UniFi site auto-resolve skipped: %s", e)
+
     def get_overview(self) -> Dict[str, Any]:
         """
         Fetch UniFi WLANs, Devices (APs & Switches), and Active Clients.
         """
+        if not self.cfg.api_key and not self._logged_in_at:
+            self.authenticate()
+        self._ensure_site_resolved()
+
         wlans = self.get_wlans()
         raw_devices = self._request("GET", "stat/device") or []
         raw_clients = self._request("GET", "stat/sta") or []
+
+        # Fallback: On newer UniFi OS / Network 8.x+, if stat/sta is empty, try v2 active clients endpoint
+        if not raw_clients:
+            try:
+                v2_resp = self.session.get(
+                    self._raw_url(f"v2/api/site/{self.cfg.site}/clients/active"),
+                    headers=self._headers(),
+                    timeout=self.cfg.timeout,
+                )
+                if v2_resp.status_code == 200 and v2_resp.text:
+                    v2_body = v2_resp.json()
+                    if isinstance(v2_body, list):
+                        raw_clients = v2_body
+                    elif isinstance(v2_body, dict) and isinstance(v2_body.get("data"), list):
+                        raw_clients = v2_body["data"]
+            except Exception as e:
+                log.debug("UniFi v2 clients fallback error: %s", e)
 
         ap_names_by_mac: Dict[str, str] = {}
         devices: List[Dict[str, Any]] = []
@@ -244,25 +306,37 @@ class UniFiClient:
             mac = str(c.get("mac") or "").lower()
             hostname = str(
                 c.get("name")
+                or c.get("display_name")
                 or c.get("hostname")
                 or c.get("oui")
                 or mac
             )
-            ap_mac = str(c.get("ap_mac") or "").lower()
+            ap_mac = str(c.get("ap_mac") or c.get("uplink_mac") or "").lower()
             signal = c.get("signal") if c.get("signal") is not None else c.get("rssi")
+            is_wired = bool(c.get("is_wired", False)) or str(c.get("type") or "").upper() == "WIRED"
+            ip_val = str(c.get("ip") or c.get("last_ip") or "—")
+            essid_val = str(c.get("essid") or c.get("ssid") or ("LAN" if is_wired else ""))
+            ap_name_val = str(c.get("uplink_name") or ap_names_by_mac.get(ap_mac, ap_mac or "Switch"))
             clients.append({
                 "mac": mac,
                 "hostname": hostname,
-                "ip": str(c.get("ip") or "—"),
-                "essid": str(c.get("essid") or ("LAN" if c.get("is_wired") else "")),
-                "ap_name": ap_names_by_mac.get(ap_mac, ap_mac or "Switch"),
-                "is_wired": bool(c.get("is_wired", False)),
+                "ip": ip_val,
+                "essid": essid_val,
+                "ap_name": ap_name_val,
+                "is_wired": is_wired,
                 "is_guest": bool(c.get("is_guest", False)),
                 "signal_dbm": int(signal) if signal is not None else None,
                 "radio": str(c.get("radio_proto") or c.get("radio") or ""),
             })
 
         clients.sort(key=lambda x: (x["is_wired"], x["hostname"].lower()))
+        log.info(
+            "UniFi [%s] overview: %d WLANs, %d devices, %d clients",
+            self.cfg.site,
+            len(wlans),
+            len(devices),
+            len(clients),
+        )
 
         return {
             "configured": True,

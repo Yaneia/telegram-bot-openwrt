@@ -86,6 +86,7 @@ async def build_serverless_snapshot(
     executor: ThreadPoolExecutor,
     bot_username: str = "",
     unifi: Optional[UniFiClient] = None,
+    rpc_creds: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Collect live status from OpenWrt routers and AdGuard Home locally on the router
@@ -118,6 +119,9 @@ async def build_serverless_snapshot(
 
     if not is_authorized:
         return snapshot
+
+    if rpc_creds:
+        snapshot["rpc"] = rpc_creds
 
     # 1. Fetch Guest Wi-Fi & AdGuard status (for both 'user' and 'admin')
     routers_wifi: Dict[str, Any] = {}
@@ -254,28 +258,27 @@ def _encode_network_with_budget(network_snap: Dict[str, Any], max_len: int = 750
     """Encode the network tab snapshot, trimming the clients list if needed to stay under max_len chars."""
     clients = list(network_snap.get("clients") or [])
     token = encode_state_token(network_snap)
-    while len(token) > max_len and clients:
-        # Trim clients list by ~25% each step
-        new_count = max(0, int(len(clients) * 0.7) - 1)
+    while len(token) > max_len and len(clients) > 5:
+        new_count = max(5, int(len(clients) * 0.7) - 1)
         clients = clients[:new_count]
         network_snap["clients"] = clients
+        token = encode_state_token(network_snap)
+    if len(token) > max_len and clients:
+        network_snap["clients"] = []
         token = encode_state_token(network_snap)
     return token
 
 
 def _encode_unifi_with_budget(unifi_snap: Dict[str, Any], max_len: int = 750) -> str:
-    """Encode the UniFi tab snapshot, trimming clients/poe details if needed to stay under max_len chars."""
+    """Encode the UniFi tab snapshot, stripping poe_ports first before trimming clients so clients remain visible."""
     unifi_data = dict(unifi_snap.get("unifi") or {})
     unifi_snap["unifi"] = unifi_data
     clients = list(unifi_data.get("clients") or [])
+    unifi_data["total_clients"] = len(clients)
     token = encode_state_token(unifi_snap)
-    while len(token) > max_len and clients:
-        new_count = max(0, int(len(clients) * 0.7) - 1)
-        clients = clients[:new_count]
-        unifi_data["clients"] = clients
-        token = encode_state_token(unifi_snap)
+
+    # Step 1: Strip poe_ports from devices FIRST if over budget (devices alone can be large)
     if len(token) > max_len and unifi_data.get("devices"):
-        # Strip poe_ports detail if still over budget
         slim_devs = []
         for d in unifi_data["devices"]:
             dc = dict(d)
@@ -283,6 +286,14 @@ def _encode_unifi_with_budget(unifi_snap: Dict[str, Any], max_len: int = 750) ->
             slim_devs.append(dc)
         unifi_data["devices"] = slim_devs
         token = encode_state_token(unifi_snap)
+
+    # Step 2: Trim clients list gradually while ALWAYS keeping at least 8 clients in the initial URL token
+    while len(token) > max_len and len(clients) > 8:
+        new_count = max(8, int(len(clients) * 0.7) - 1)
+        clients = clients[:new_count]
+        unifi_data["clients"] = clients
+        token = encode_state_token(unifi_snap)
+
     return token
 
 
@@ -294,12 +305,14 @@ def split_snapshot_into_app_tokens(
     Split a full serverless snapshot into compact per-app tokens ('home', 'network', 'unifi', 'admin')
     so that all 4 buttons together in Telegram's ReplyKeyboardMarkup stay strictly under 4 KB.
     """
-    base = {
+    base: Dict[str, Any] = {
         "serverless": True,
         "ts": snapshot.get("ts", int(time.time())),
         "bot_username": snapshot.get("bot_username", ""),
         "user": snapshot.get("user", {}),
     }
+    if snapshot.get("rpc"):
+        base["rpc"] = snapshot["rpc"]
 
     # 1. Home token (OpenWrt Guest Wi-Fi + AdGuard + UniFi Guest WLANs)
     home_snap: Dict[str, Any] = {
