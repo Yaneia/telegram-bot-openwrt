@@ -910,7 +910,12 @@
     };
 
     $("copy-unauth-id-btn").onclick = () => {
-      if (state.user) copyId(state.user.user_id);
+      const idText = ($("unauth-user-id").textContent || "").trim();
+      if (idText && idText !== "—") {
+        copyId(idText);
+      } else if (state.user && state.user.user_id) {
+        copyId(state.user.user_id);
+      }
     };
     $("copy-my-id-btn").onclick = () => {
       if (state.user) copyId(state.user.user_id);
@@ -986,23 +991,33 @@
     $("refresh-btn").hidden = true;
     const initialTab = detectInitialApp();
     const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user : null;
+    const isInsideTelegram = Boolean(
+      (tgUser && tgUser.id) || (tg && tg.platform && tg.platform !== "unknown")
+    );
 
     // 1. Check if launched in Serverless Snapshot Mode (#state=...)
     const hashToken = extractHashStateToken();
     if (hashToken) {
       try {
         const snapshot = await decodeStateToken(hashToken);
-        if (!snapshot || !snapshot.user || !snapshot.user.is_authorized) {
+        const snapUser = snapshot && snapshot.user ? snapshot.user : null;
+        const resolvedUid = (tgUser && tgUser.id) || (snapUser && snapUser.user_id) || null;
+
+        if (!snapUser || !snapUser.is_authorized) {
           denyAccess(
-            "Доступ запрещён",
-            "Ваш аккаунт не авторизован для использования этого бота.",
-            tgUser ? tgUser.id : null
+            "Вы не добавлены в бот",
+            "Ваш аккаунт не находится в белом списке бота. Отправьте ваш ID администратору для получения доступа:",
+            resolvedUid
           );
           return;
         }
 
-        // Strict check: must be opened inside Telegram by the exact user_id for whom the snapshot was issued
-        if (!tgUser || !tgUser.id || Number(tgUser.id) !== Number(snapshot.user.user_id)) {
+        // Must be opened inside Telegram, and if Telegram provides initDataUnsafe.user (inline button),
+        // it must match the user_id in the snapshot
+        if (
+          !isInsideTelegram ||
+          (tgUser && tgUser.id && Number(tgUser.id) !== Number(snapUser.user_id))
+        ) {
           denyAccess(
             "Доступ запрещён",
             "Апка может быть открыта только авторизованным пользователем внутри Telegram.",
@@ -1014,7 +1029,7 @@
         state.serverless = true;
         state.snapshotTs = snapshot.ts || 0;
         state.botUsername = snapshot.bot_username || "";
-        state.user = snapshot.user;
+        state.user = snapUser;
         state.wifi = snapshot.wifi || null;
         state.adguard = snapshot.adguard || null;
         state.routers = snapshot.routers || [];
@@ -1024,7 +1039,11 @@
         applyUserRoleAndBoot(initialTab);
         return;
       } catch (err) {
-        denyAccess("Ошибка доступа", "Некорректный или повреждённый токен состояния.");
+        denyAccess(
+          "Ошибка доступа",
+          "Некорректный или устаревший токен состояния. Отправьте /start боту в чате.",
+          tgUser ? tgUser.id : null
+        );
         return;
       }
     }
@@ -1044,8 +1063,10 @@
 
     // 3. No valid #state token -> Strictly block access
     denyAccess(
-      "Доступ запрещён",
-      "Приложение открывается только через персональные кнопки в чате бота для добавленных пользователей.",
+      "Доступ закрыт",
+      tgUser && tgUser.id
+        ? "Вы не авторизованы или открыли апку без токена состояния. Если у вас уже есть доступ — отправьте боту /start и откройте пульт через кнопку в чате. Иначе передайте ваш ID администратору:"
+        : "Апка открывается только для авторизованных пользователей через кнопки после команды /start в чате бота. Чтобы узнать свой ID, отправьте боту /get_user_id.",
       tgUser ? tgUser.id : null
     );
   }
