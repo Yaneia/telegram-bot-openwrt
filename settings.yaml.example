@@ -5,7 +5,7 @@ admin_user_ids: []                            # Telegram user IDs with full admi
 # Default mode: 100% Serverless (ZERO open ports on the router!)
 # Host the static ./webapp folder on GitHub Pages / Cloudflare Pages and set static_url below.
 webapp:
-  static_url: "https://YOUR_GITHUB_USERNAME.github.io/telegram-bot-openwrt/"
+  static_url: "https://yaneia.github.io/telegram-bot-openwrt/"
   enabled: false                              # Keep false so NO HTTP port is opened on the router
   host: "127.0.0.1"                           # Used only if enabled: true (local LAN/dev server)
   port: 8080

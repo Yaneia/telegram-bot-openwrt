@@ -956,9 +956,105 @@
     switchTab(initialTab);
   }
 
+  function startDemoMode(initialTab = "home") {
+    state.serverless = true;
+    state.snapshotTs = Math.floor(Date.now() / 1000);
+    state.user = {
+      user_id: 123456789,
+      first_name: "Demo",
+      last_name: "Admin",
+      username: "demo_admin",
+      role: "admin",
+      is_authorized: true,
+      is_admin: true,
+    };
+    state.wifi = {
+      enabled: true,
+      ssids: ["Home_Guest_2.4G", "Home_Guest_5G"],
+      routers: [
+        {
+          name: "main_router",
+          ok: true,
+          ip: "192.168.1.1",
+          enabled: true,
+          interfaces: [
+            { section: "wifinet5", enabled: true },
+            { section: "wifinet6", enabled: true },
+          ],
+        },
+      ],
+    };
+    state.adguard = {
+      configured: true,
+      ok: true,
+      enabled: true,
+      version: "v0.107.52",
+      disabled_duration_ms: 0,
+      stats: {
+        dns_queries: 48920,
+        blocked_filtering: 7340,
+        blocked_percent: 15.0,
+        avg_processing_ms: 1.6,
+      },
+    };
+    state.routers = [
+      {
+        name: "main_router",
+        hostname: "OpenWrt-Main",
+        ok: true,
+        ip: "192.168.1.1",
+        model: "Xiaomi AX3600",
+        version: "OpenWrt 23.05.3",
+        uptime_seconds: 349200,
+        load_avg: [0.12, 0.08, 0.05],
+        clients_count: 2,
+        memory: {
+          used_bytes: 185 * 1024 * 1024,
+          total_bytes: 512 * 1024 * 1024,
+          percent: 36.1,
+        },
+      },
+    ];
+    state.wolHosts = [
+      {
+        name: "home_pc",
+        mac: "00:11:22:33:44:55",
+        online: true,
+        detected_ip: "192.168.1.50",
+      },
+    ];
+    state.clients = [
+      {
+        hostname: "home_pc",
+        ip: "192.168.1.50",
+        mac: "00:11:22:33:44:55",
+        online: true,
+        router: "main_router",
+      },
+      {
+        hostname: "MacBook-Pro",
+        ip: "192.168.1.25",
+        mac: "aa:bb:cc:11:22:33",
+        online: true,
+        router: "main_router",
+      },
+    ];
+    state.adminUsers = [
+      { user_id: 123456789, role: "admin", is_config_admin: true, in_whitelist_file: false },
+      { user_id: 987654321, role: "user", is_config_admin: false, in_whitelist_file: true },
+    ];
+    applyUserRoleAndBoot(initialTab);
+    showToast("Включен демо-режим предпросмотра 👀");
+  }
+
   async function bootstrap() {
     bindStaticEvents();
     const initialTab = detectInitialApp();
+
+    const demoBtn = $("start-demo-btn");
+    if (demoBtn) {
+      demoBtn.onclick = () => startDemoMode(initialTab);
+    }
 
     // 1. Check if launched in Serverless Snapshot Mode (#state=...)
     const hashToken = extractHashStateToken();
@@ -984,30 +1080,42 @@
       }
     }
 
-    // 2. Fallback: Local API Mode (when running local server / dev_mode)
-    try {
-      const me = await apiCall("/api/me");
-      state.user = me.user;
-      applyUserRoleAndBoot(initialTab);
-    } catch (err) {
-      // If opened on static GitHub Pages without #state=...
-      const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
-      if (tgUser && tgUser.id) {
-        state.user = {
-          user_id: tgUser.id,
-          first_name: tgUser.first_name || "",
-          username: tgUser.username || "",
-          role: "unauthorized",
-          is_authorized: false,
-          is_admin: false,
-        };
+    // 2. Fallback: Local API Mode (only when not hosted on static GitHub Pages)
+    const isStaticHost = window.location.hostname.endsWith(".github.io") || window.location.hostname.endsWith(".pages.dev");
+    if (!isStaticHost) {
+      try {
+        const me = await apiCall("/api/me");
+        state.user = me.user;
         applyUserRoleAndBoot(initialTab);
-        $("app-title").textContent = "Откройте из чата бота";
-        $("app-subtitle").textContent = "Нажмите кнопку пульта внизу чата для загрузки статуса";
         return;
-      }
-      $("app-subtitle").textContent = err.message || "Откройте апку через кнопку в Telegram-боте";
-      showToast(err.message || "Откройте апку через кнопку в Telegram-боте");
+      } catch (_) {}
+    }
+
+    // 3. Static GitHub Pages opened directly without #state=...
+    const tgUser = tg && tg.initDataUnsafe && tg.initDataUnsafe.user;
+    $("screen-unauthorized").hidden = false;
+    $("bottom-nav").hidden = true;
+    if (demoBtn) demoBtn.hidden = false;
+
+    if (tgUser && tgUser.id) {
+      $("app-icon").textContent = "🤖";
+      $("app-title").textContent = "Откройте из клавиатуры";
+      $("app-subtitle").textContent = `Telegram ID: ${tgUser.id}`;
+      $("unauth-icon").textContent = "📲";
+      $("unauth-title").textContent = "Запустите через кнопку пульта";
+      $("unauth-desc").textContent =
+        "Чтобы открыть пульт с актуальным статусом роутера без внешних портов, отправьте боту /start и нажмите кнопку «🏠 Домашний пульт» на нижней клавиатуре чата.";
+      $("unauth-user-id").textContent = tgUser.id;
+    } else {
+      $("app-icon").textContent = "✅";
+      $("app-title").textContent = "OpenWrt Hub";
+      $("app-subtitle").textContent = "Статический фронтенд готов (Serverless)";
+      $("unauth-icon").textContent = "🛡️";
+      $("unauth-title").textContent = "Статический пульт развёрнут";
+      $("unauth-desc").textContent =
+        "Эндпоинт роутера скрыт из интернета. В рабочем режиме открывайте эту страницу через кнопки в вашем Telegram-боте (бот передаёт сжатый снимок состояния в #state).";
+      $("unauth-id-box").hidden = true;
+      $("copy-unauth-id-btn").hidden = true;
     }
   }
 

@@ -34,20 +34,23 @@
     <!-- Toast Notification -->
     <div id="toast" class="toast" hidden></div>
 
-    <!-- Unauthorized Screen -->
+    <!-- Unauthorized / Direct Browser Launch Screen -->
     <main id="screen-unauthorized" class="screen" hidden>
       <div class="card empty-state-card">
-        <div class="empty-icon">🔒</div>
-        <h2>Доступ ограничен</h2>
-        <p class="muted-text">
+        <div class="empty-icon" id="unauth-icon">🔒</div>
+        <h2 id="unauth-title">Доступ ограничен</h2>
+        <p class="muted-text" id="unauth-desc">
           Ваш аккаунт ещё не добавлен в белый список бота. Отправьте ваш Telegram ID администратору для получения доступа:
         </p>
-        <div class="id-showcase">
+        <div class="id-showcase" id="unauth-id-box">
           <span class="id-label">Ваш Telegram ID</span>
           <code class="id-value" id="unauth-user-id">—</code>
         </div>
         <button class="btn btn-primary btn-block" id="copy-unauth-id-btn">
           📋 Скопировать мой ID
+        </button>
+        <button class="btn btn-secondary btn-block" id="start-demo-btn" style="margin-top: 10px;" hidden>
+          👀 Предпросмотр интерфейса (Демо-режим)
         </button>
       </div>
     </main>

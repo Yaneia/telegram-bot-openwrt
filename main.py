@@ -81,10 +81,16 @@ access_manager = AccessManager(WHITELIST_FILE, ADMIN_USER_IDS)
 
 # WebApp configuration
 # By default, 'enabled' is False so NO port is opened on the router (100% Serverless mode via GitHub Pages + WebApp.sendData)
+DEFAULT_GITHUB_PAGES_URL = "https://yaneia.github.io/telegram-bot-openwrt/"
 webapp_cfg: Dict[str, Any] = settings.get("webapp") or {}
-WEBAPP_STATIC_URL: str = str(
-    webapp_cfg.get("static_url") or webapp_cfg.get("public_url") or ""
-).rstrip("/")
+_raw_static_url = str(
+    webapp_cfg.get("static_url")
+    or webapp_cfg.get("public_url")
+    or DEFAULT_GITHUB_PAGES_URL
+).strip()
+if _raw_static_url and not _raw_static_url.endswith("/") and not _raw_static_url.endswith(".html"):
+    _raw_static_url += "/"
+WEBAPP_STATIC_URL: str = _raw_static_url
 WEBAPP_LOCAL_SERVER_ENABLED: bool = bool(webapp_cfg.get("enabled", False))
 WEBAPP_HOST: str = str(webapp_cfg.get("host", "127.0.0.1"))
 WEBAPP_PORT: int = int(webapp_cfg.get("port", 8080))
@@ -299,18 +305,10 @@ def build_bot_application():
         sep = "&" if "?" in WEBAPP_STATIC_URL else "?"
         return f"{WEBAPP_STATIC_URL}{sep}app={app_name}#state={state_token}"
 
-    async def build_serverless_reply_keyboard(user, bot_username: str = "") -> Optional[ReplyKeyboardMarkup]:
-        """
-        Builds the bottom ReplyKeyboardMarkup with WebApp buttons containing the compressed
-        live #state=... snapshot in the URL hash.
-        Because these are KeyboardButtons, Telegram enables native WebApp.sendData()
-        so the router needs ZERO open inbound ports!
-        """
+    def build_reply_keyboard_from_token(user_id: int, state_token: str) -> Optional[ReplyKeyboardMarkup]:
         if not WEBAPP_STATIC_URL.startswith("https://"):
             return None
-        state_token = await build_user_state_token(user, bot_username=bot_username)
-        is_admin = access_manager.is_admin(user.id)
-
+        is_admin = access_manager.is_admin(user_id)
         rows: List[List[KeyboardButton]] = [
             [
                 KeyboardButton(
@@ -340,14 +338,45 @@ def build_bot_application():
         )
         return ReplyKeyboardMarkup(rows, resize_keyboard=True)
 
-    def build_inline_menu_markup(user_id: int) -> InlineKeyboardMarkup:
+    async def build_serverless_reply_keyboard(user, bot_username: str = "") -> Optional[ReplyKeyboardMarkup]:
+        if not WEBAPP_STATIC_URL.startswith("https://"):
+            return None
+        state_token = await build_user_state_token(user, bot_username=bot_username)
+        return build_reply_keyboard_from_token(user.id, state_token)
+
+    def build_inline_menu_markup(user_id: int, state_token: Optional[str] = None) -> InlineKeyboardMarkup:
         is_admin = access_manager.is_admin(user_id)
-        button_rows: List[List[InlineKeyboardButton]] = [
+        button_rows: List[List[InlineKeyboardButton]] = []
+
+        if WEBAPP_STATIC_URL.startswith("https://") and state_token:
+            button_rows.append(
+                [
+                    InlineKeyboardButton(
+                        "🏠 Открыть Домашний пульт (App)",
+                        web_app=WebAppInfo(url=_app_url("home", state_token)),
+                    )
+                ]
+            )
+            if is_admin:
+                button_rows.append(
+                    [
+                        InlineKeyboardButton(
+                            "📡 Сеть и WOL (App)",
+                            web_app=WebAppInfo(url=_app_url("network", state_token)),
+                        ),
+                        InlineKeyboardButton(
+                            "🔐 Доступ (App)",
+                            web_app=WebAppInfo(url=_app_url("admin", state_token)),
+                        ),
+                    ]
+                )
+
+        button_rows.append(
             [
                 InlineKeyboardButton("📶 WiFi", callback_data="menu_wifi"),
                 InlineKeyboardButton("🛡️ AdGuard", callback_data="menu_system_adguard"),
             ]
-        ]
+        )
         if is_admin:
             button_rows.append(
                 [
@@ -402,16 +431,25 @@ def build_bot_application():
             except Exception as e:
                 log.warning("Failed to parse deep-link cmd: %s", e)
 
-        reply_kb = await build_serverless_reply_keyboard(user, bot_username)
+        state_token = (
+            await build_user_state_token(user, bot_username=bot_username)
+            if WEBAPP_STATIC_URL.startswith("https://")
+            else None
+        )
+        reply_kb = (
+            build_reply_keyboard_from_token(user.id, state_token)
+            if state_token
+            else None
+        )
         if reply_kb:
             await update.message.reply_text(
                 "🔒 Пульт готов (работает без открытых портов на роутере).\n"
-                "Откройте нужное приложение кнопкой на нижней клавиатуре:",
+                "Откройте нужное приложение кнопкой на нижней клавиатуре или в сообщении:",
                 reply_markup=reply_kb,
             )
         await update.message.reply_text(
-            "Быстрое меню в чате:",
-            reply_markup=build_inline_menu_markup(user.id),
+            "Меню управления:",
+            reply_markup=build_inline_menu_markup(user.id, state_token),
         )
 
     async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE):
