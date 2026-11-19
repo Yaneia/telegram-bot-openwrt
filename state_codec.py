@@ -329,45 +329,18 @@ async def build_serverless_snapshot(
 
 def encode_combined_snapshot_with_budget(
     snapshot: Dict[str, Any],
-    max_len: int = 1650,
+    max_len: int = 2100,
 ) -> str:
     """
-    Encode the complete combined snapshot (all 4 tabs: Home, Network, UniFi, Admin + OpenWrt clients)
+    Encode the complete combined snapshot (all 5 tabs: Home, Network, UniFi, DTEK, Admin + OpenWrt clients)
     into a single state token, trimming only if needed to stay under max_len chars.
+    Always preserves full DTEK stats (users, clicks, slots, notifications, cache, recent_users).
     """
     snap_copy = dict(snapshot)
     clients = list(snap_copy.get("clients") or [])
     token = encode_state_token(snap_copy)
 
-    # If over budget, slim DTEK details and strip PoE port details first before touching OpenWrt clients
-    # (Full untruncated DTEK & OpenWrt data is fetched automatically via background RPC on app load)
-    if len(token) > max_len and isinstance(snap_copy.get("dtek"), dict) and snap_copy["dtek"].get("configured"):
-        d_orig = snap_copy["dtek"]
-        snap_copy["dtek"] = {
-            "configured": True,
-            "ok": d_orig.get("ok", True),
-            "error": d_orig.get("error"),
-            "has_usage_events": d_orig.get("has_usage_events", False),
-            "users": d_orig.get("users"),
-            "clicks": {
-                **(d_orig.get("clicks") or {}),
-                "top_actions": ((d_orig.get("clicks") or {}).get("top_actions") or [])[:4],
-            },
-            "slots": {
-                "total": (d_orig.get("slots") or {}).get("total", 0),
-                "regions": (d_orig.get("slots") or {}).get("regions") or [],
-                "top_queues": [],
-            },
-            "notifications": {
-                "sent_total": (d_orig.get("notifications") or {}).get("sent_total", 0),
-                "sent_24h": (d_orig.get("notifications") or {}).get("sent_24h", 0),
-                "sent_7d": (d_orig.get("notifications") or {}).get("sent_7d", 0),
-            },
-            "cache": [],
-            "recent_users": [],
-        }
-        token = encode_state_token(snap_copy)
-
+    # Step 1: If over budget, strip PoE port details from UniFi devices first
     if len(token) > max_len and isinstance(snap_copy.get("unifi"), dict):
         u_copy = dict(snap_copy["unifi"])
         if u_copy.get("devices"):
@@ -377,18 +350,17 @@ def encode_combined_snapshot_with_budget(
             snap_copy["unifi"] = u_copy
             token = encode_state_token(snap_copy)
 
+    # Step 2: Cap DTEK recent_users at 8 while keeping all clicks, slots, notifications, cache, and top_actions intact
     if len(token) > max_len and isinstance(snap_copy.get("dtek"), dict) and snap_copy["dtek"].get("configured"):
-        snap_copy["dtek"] = {
-            "configured": True,
-            "ok": snap_copy["dtek"].get("ok", True),
-            "error": snap_copy["dtek"].get("error"),
-            "has_usage_events": snap_copy["dtek"].get("has_usage_events", False),
-            "users": snap_copy["dtek"].get("users"),
-        }
-        token = encode_state_token(snap_copy)
+        d_copy = dict(snap_copy["dtek"])
+        if len(d_copy.get("recent_users") or []) > 8:
+            d_copy["recent_users"] = d_copy["recent_users"][:8]
+            snap_copy["dtek"] = d_copy
+            token = encode_state_token(snap_copy)
 
-    while len(token) > max_len and len(clients) > 10:
-        new_count = max(10, int(len(clients) * 0.8) - 1)
+    # Step 3: Trim OpenWrt clients list gradually until token fits max_len
+    while len(token) > max_len and len(clients) > 8:
+        new_count = max(8, int(len(clients) * 0.8) - 1)
         clients = clients[:new_count]
         snap_copy["clients"] = clients
         token = encode_state_token(snap_copy)

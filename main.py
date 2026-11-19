@@ -198,7 +198,7 @@ def _format_user_list() -> str:
 async def build_user_state_tokens(
     user,
     bot_username: str = "",
-    max_per_button_len: int = 1650,
+    max_per_button_len: int = 2100,
 ) -> Dict[str, str]:
     snapshot = await build_serverless_snapshot(
         user_id=user.id,
@@ -554,7 +554,7 @@ def build_bot_application():
             return None
         if tokens is None:
             tokens = await build_user_state_tokens(
-                user, bot_username=bot_username, max_per_button_len=1650
+                user, bot_username=bot_username, max_per_button_len=2100
             )
         reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
         try:
@@ -564,7 +564,7 @@ def build_bot_application():
             if "too long" in str(e).lower():
                 log.warning("Reply markup exceeded limit (%s), retrying with compact budget...", e)
                 tokens = await build_user_state_tokens(
-                    user, bot_username=bot_username, max_per_button_len=1100
+                    user, bot_username=bot_username, max_per_button_len=1650
                 )
                 reply_kb = build_reply_keyboard_from_tokens(user.id, tokens)
                 await message.reply_text(text, reply_markup=reply_kb)

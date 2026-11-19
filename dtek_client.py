@@ -505,7 +505,6 @@ class DtekClient:
             return {
                 "configured": True,
                 "ok": True,
-                "db_path": db_path,
                 "has_usage_events": has_usage_events,
                 "users": {
                     "total": total_users,
@@ -529,11 +528,9 @@ class DtekClient:
                     "top_queues": top_queues,
                 },
                 "notifications": {
-                    "settings": notif_settings,
                     "sent_total": sent_total,
                     "sent_24h": sent_24h,
                     "sent_7d": sent_7d,
-                    "by_type": sent_by_type,
                 },
                 "cache": cache_list,
                 "recent_users": recent_users,
