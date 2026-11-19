@@ -13,6 +13,7 @@ from wakeonlan import send_magic_packet
 
 from adguard_client import AdGuardClient, AdGuardConfig, AdGuardError
 from auth import AccessManager
+from dtek_client import DtekClient, DtekConfig, DtekError
 from openwrt_client import OpenWrtClient, RouterConfig, OpenWrtError
 from rpc_bridge import ServerlessRpcBridge, derive_rpc_credentials
 from state_codec import (
@@ -97,6 +98,16 @@ if unifi_cfg and (unifi_cfg.get("base_url") or unifi_cfg.get("username") or unif
             verify_tls=bool(unifi_cfg.get("verify_tls", False)),
             is_unifi_os=unifi_cfg.get("is_unifi_os"),
             guest_wlan_names=guest_wlans,
+        )
+    )
+
+dtek_cfg = settings.get("dtek") or {}
+DTEK: Optional[DtekClient] = None
+if dtek_cfg.get("enabled", True):
+    DTEK = DtekClient(
+        DtekConfig(
+            db_path=str(dtek_cfg.get("db_path") or "").strip(),
+            enabled=bool(dtek_cfg.get("enabled", True)),
         )
     )
 
@@ -200,6 +211,7 @@ async def build_user_state_tokens(
         executor=_executor,
         bot_username=bot_username,
         unifi=UNIFI,
+        dtek=DTEK,
         rpc_creds=RPC_CREDS,
     )
     combined_tok = encode_combined_snapshot_with_budget(
@@ -240,6 +252,7 @@ async def handle_rpc_request(req_data: Dict[str, Any]) -> Dict[str, Any]:
         executor=_executor,
         bot_username="",
         unifi=UNIFI,
+        dtek=DTEK,
         rpc_creds=RPC_CREDS,
     )
     return {
@@ -752,6 +765,48 @@ def build_bot_application():
             return
         await update.message.reply_text(_format_user_list())
 
+    async def cmd_dtek(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not await ensure_admin(update):
+            return
+        if DTEK is None or not DTEK.cfg.enabled:
+            await update.message.reply_text("⚠️ Интеграция с ДТЕК-ботом отключена в settings.yaml.")
+            return
+        try:
+            st = await run_blocking(DTEK.get_stats)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка чтения БД ДТЕК-бота: {e}")
+            return
+
+        u = st.get("users") or {}
+        c = st.get("clicks") or {}
+        sl = st.get("slots") or {}
+        nf = st.get("notifications") or {}
+
+        lines = [
+            "⚡ Статистика бота ДТЕК",
+            f"👥 Пользователи: всего {u.get('total', 0)} (активных: {u.get('active', 0)})",
+            f"📈 Активность: DAU (24ч): {u.get('dau_24h', 0)} • WAU (7д): {u.get('wau_7d', 0)} • Новых за 24ч: +{u.get('new_24h', 0)}",
+            f"📍 Очереди: {sl.get('total', 0)} слотов у {u.get('with_slots', 0)} юзеров (2 очереди: {u.get('dual_slot', 0)})",
+            f"🔔 Пушей отправлено: {nf.get('sent_24h', 0)} за 24ч • {nf.get('sent_7d', 0)} за 7д • {nf.get('sent_total', 0)} всего",
+        ]
+        if st.get("has_usage_events"):
+            lines.append(
+                f"👆 Нажатия команд/кнопок: {c.get('last_24h', 0)} за 24ч • {c.get('last_7d', 0)} за 7д • {c.get('total', 0)} всего"
+            )
+            top_acts = c.get("top_actions") or []
+            if top_acts:
+                top_str = ", ".join(f"{a['action']} ({a['total']})" for a in top_acts[:5])
+                lines.append(f"🏆 Топ действий: {top_str}")
+        else:
+            lines.append("ℹ️ Счётчик нажатий команд (usage_events) ещё не активирован в БД ДТЕК.")
+
+        regs = sl.get("regions") or []
+        if regs:
+            reg_str = ", ".join(f"{r['region']}: {r['slots']}" for r in regs)
+            lines.append(f"🗺️ По регионам: {reg_str}")
+
+        await update.message.reply_text("\n".join(lines))
+
     async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "awaiting_admin_action" in context.user_data:
             context.user_data.pop("awaiting_admin_action", None)
@@ -1152,6 +1207,7 @@ def build_bot_application():
     app.add_handler(CommandHandler("adduser", cmd_adduser))
     app.add_handler(CommandHandler("userdel", cmd_userdel))
     app.add_handler(CommandHandler("listusers", cmd_listusers))
+    app.add_handler(CommandHandler("dtek", cmd_dtek))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, on_webapp_data))

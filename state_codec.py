@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional
 
 from adguard_client import AdGuardClient
 from auth import AccessManager
+from dtek_client import DtekClient
 from openwrt_client import OpenWrtClient
 from unifi_client import UniFiClient
 
@@ -86,6 +87,7 @@ async def build_serverless_snapshot(
     executor: ThreadPoolExecutor,
     bot_username: str = "",
     unifi: Optional[UniFiClient] = None,
+    dtek: Optional[DtekClient] = None,
     rpc_creds: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
@@ -231,9 +233,24 @@ async def build_serverless_snapshot(
             except Exception as e:
                 return {"configured": True, "ok": False, "error": str(e)}
 
+        async def _fetch_dtek_admin():
+            if dtek is None or not dtek.cfg.enabled:
+                return {"configured": False}
+            # If neither explicit path nor auto-discovered DB exists, hide tab unless db_path was explicitly configured
+            if not dtek.cfg.db_path and not dtek.is_available():
+                return {"configured": False}
+            try:
+                st = await run_blocking(dtek.get_stats)
+                return {"configured": True, "ok": True, **(st or {})}
+            except Exception as e:
+                return {"configured": True, "ok": False, "error": str(e)}
+
         unifi_task = asyncio.create_task(_fetch_unifi_admin())
+        dtek_task = asyncio.create_task(_fetch_dtek_admin())
         await asyncio.gather(*[_fetch_router_admin(n, c) for n, c in router_clients.items()])
         unifi_ov = await unifi_task
+        dtek_ov = await dtek_task
+        snapshot["dtek"] = dtek_ov
 
         # Mark any UniFi WLAN matching an OpenWrt guest SSID as is_guest=True
         owrt_ssids_low = {s.lower() for s in ssids}
@@ -322,7 +339,34 @@ def encode_combined_snapshot_with_budget(
     clients = list(snap_copy.get("clients") or [])
     token = encode_state_token(snap_copy)
 
-    # If over budget, strip PoE port details first before touching clients
+    # If over budget, slim DTEK details and strip PoE port details first before touching OpenWrt clients
+    # (Full untruncated DTEK & OpenWrt data is fetched automatically via background RPC on app load)
+    if len(token) > max_len and isinstance(snap_copy.get("dtek"), dict) and snap_copy["dtek"].get("configured"):
+        d_orig = snap_copy["dtek"]
+        snap_copy["dtek"] = {
+            "configured": True,
+            "ok": d_orig.get("ok", True),
+            "has_usage_events": d_orig.get("has_usage_events", False),
+            "users": d_orig.get("users"),
+            "clicks": {
+                **(d_orig.get("clicks") or {}),
+                "top_actions": ((d_orig.get("clicks") or {}).get("top_actions") or [])[:4],
+            },
+            "slots": {
+                "total": (d_orig.get("slots") or {}).get("total", 0),
+                "regions": (d_orig.get("slots") or {}).get("regions") or [],
+                "top_queues": [],
+            },
+            "notifications": {
+                "sent_total": (d_orig.get("notifications") or {}).get("sent_total", 0),
+                "sent_24h": (d_orig.get("notifications") or {}).get("sent_24h", 0),
+                "sent_7d": (d_orig.get("notifications") or {}).get("sent_7d", 0),
+            },
+            "cache": [],
+            "recent_users": [],
+        }
+        token = encode_state_token(snap_copy)
+
     if len(token) > max_len and isinstance(snap_copy.get("unifi"), dict):
         u_copy = dict(snap_copy["unifi"])
         if u_copy.get("devices"):
@@ -331,6 +375,15 @@ def encode_combined_snapshot_with_budget(
             ]
             snap_copy["unifi"] = u_copy
             token = encode_state_token(snap_copy)
+
+    if len(token) > max_len and isinstance(snap_copy.get("dtek"), dict) and snap_copy["dtek"].get("configured"):
+        snap_copy["dtek"] = {
+            "configured": True,
+            "ok": snap_copy["dtek"].get("ok", True),
+            "has_usage_events": snap_copy["dtek"].get("has_usage_events", False),
+            "users": snap_copy["dtek"].get("users"),
+        }
+        token = encode_state_token(snap_copy)
 
     while len(token) > max_len and len(clients) > 10:
         new_count = max(10, int(len(clients) * 0.8) - 1)

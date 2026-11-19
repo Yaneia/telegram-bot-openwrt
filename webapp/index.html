@@ -230,6 +230,104 @@
       </section>
     </main>
 
+    <!-- MINI APP 2C: DTEK OUTAGE BOT ANALYTICS -->
+    <main id="screen-dtek" class="screen" hidden>
+      <!-- Audience & Activity Card -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">⚡</span>
+            <div>
+              <h2 class="card-title">Аудитория ДТЕК-бота</h2>
+              <p class="card-subtitle" id="dtek-summary-subtitle">Пользователи и активность</p>
+            </div>
+          </div>
+          <span class="status-badge status-neutral" id="dtek-status-badge">—</span>
+        </div>
+
+        <div id="dtek-users-stats-grid" class="stats-grid">
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-total-users">0</span>
+            <span class="stat-label">Всего юзеров</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-dau">0</span>
+            <span class="stat-label">Активны (24ч)</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-wau">0</span>
+            <span class="stat-label">Активны (7д)</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-dual">0</span>
+            <span class="stat-label">2 очереди</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Button / Command Clicks Analytics -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">👆</span>
+            <div>
+              <h2 class="card-title">Нажатия команд и кнопок</h2>
+              <p class="card-subtitle" id="dtek-clicks-subtitle">Статистика взаимодействий с ботом</p>
+            </div>
+          </div>
+        </div>
+
+        <div id="dtek-clicks-stats-grid" class="stats-grid" hidden>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-clicks-24h">0</span>
+            <span class="stat-label">За 24 часа</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-clicks-7d">0</span>
+            <span class="stat-label">За 7 дней</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-clicks-total">0</span>
+            <span class="stat-label">Всего нажатий</span>
+          </div>
+          <div class="stat-box">
+            <span class="stat-value" id="dtek-stat-notifs-24h">0</span>
+            <span class="stat-label">Пушей (24ч)</span>
+          </div>
+        </div>
+
+        <div id="dtek-top-actions-list" class="stack-list"></div>
+      </section>
+
+      <!-- Regions, Queues & Scraper Cache Health -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">🗺️</span>
+            <div>
+              <h2 class="card-title">Регионы, очереди и кэш</h2>
+              <p class="card-subtitle" id="dtek-regions-subtitle">Распределение слотов и статус скрапера</p>
+            </div>
+          </div>
+        </div>
+        <div id="dtek-regions-list" class="stack-list"></div>
+      </section>
+
+      <!-- Recent / Top Users -->
+      <section class="card">
+        <div class="card-header">
+          <div class="card-title-group">
+            <span class="section-icon">👥</span>
+            <div>
+              <h2 class="card-title">Пользователи ДТЕК-бота</h2>
+              <p class="card-subtitle">Последние активные пользователи и их очереди</p>
+            </div>
+          </div>
+        </div>
+        <div id="dtek-users-list" class="stack-list"></div>
+      </section>
+    </main>
+
     <!-- MINI APP 3: ACCESS & ADMIN (Users & Profile) -->
     <main id="screen-admin" class="screen" hidden>
       <!-- Current Profile -->
@@ -302,6 +400,10 @@
       <button class="nav-tab" data-tab="unifi" id="nav-tab-unifi" hidden>
         <span class="nav-icon">🛜</span>
         <span class="nav-label">UniFi</span>
+      </button>
+      <button class="nav-tab" data-tab="dtek" id="nav-tab-dtek" hidden>
+        <span class="nav-icon">⚡</span>
+        <span class="nav-label">ДТЕК</span>
       </button>
       <button class="nav-tab" data-tab="admin" id="nav-tab-admin" hidden>
         <span class="nav-icon">🔐</span>

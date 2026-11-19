@@ -23,6 +23,7 @@
     clientSearch: "",
     unifi: null,
     unifiClientSearch: "",
+    dtek: null,
     adminUsers: [],
   };
 
@@ -41,6 +42,11 @@
       icon: "🛜",
       title: "UniFi Controller",
       subtitle: "Точки доступа, SSID, сигнал клиентов и PoE",
+    },
+    dtek: {
+      icon: "⚡",
+      title: "Статистика ДТЕК-бота",
+      subtitle: "Пользователи, нажатия команд, очереди и кэш",
     },
     admin: {
       icon: "🔐",
@@ -257,6 +263,7 @@
     if (snap.clients !== undefined) state.clients = snap.clients || [];
     if (snap.wol_hosts !== undefined) state.wolHosts = snap.wol_hosts || [];
     if (snap.unifi !== undefined) state.unifi = snap.unifi;
+    if (snap.dtek !== undefined) state.dtek = snap.dtek;
     if (snap.admin_users !== undefined) state.adminUsers = snap.admin_users || [];
 
     // Unlock full bottom tab navigation once complete snapshot arrives via RPC
@@ -264,6 +271,7 @@
       state.scopedApp = null;
       $("nav-tab-network").hidden = false;
       $("nav-tab-unifi").hidden = !(state.unifi && state.unifi.configured);
+      $("nav-tab-dtek").hidden = !(state.dtek && state.dtek.configured);
       $("nav-tab-admin").hidden = false;
       $("bottom-nav").hidden = false;
     }
@@ -273,6 +281,7 @@
     if (state.activeTab === "home") renderHome();
     else if (state.activeTab === "network") renderNetwork();
     else if (state.activeTab === "unifi") renderUnifi();
+    else if (state.activeTab === "dtek") renderDtek();
     else if (state.activeTab === "admin") renderAdmin();
   }
 
@@ -475,7 +484,7 @@
   }
 
   function detectInitialApp() {
-    const validTabs = ["home", "network", "unifi", "admin"];
+    const validTabs = ["home", "network", "unifi", "dtek", "admin"];
     const path = window.location.pathname.replace(/^\/+|\/+$/g, "");
     if (validTabs.includes(path)) {
       return path;
@@ -542,7 +551,7 @@
   // ---------------- Screen & Tab Switching ----------------
   async function switchTab(tabName) {
     if (!state.user || !state.user.is_authorized) return;
-    if ((tabName === "network" || tabName === "unifi" || tabName === "admin") && !state.user.is_admin) {
+    if ((tabName === "network" || tabName === "unifi" || tabName === "dtek" || tabName === "admin") && !state.user.is_admin) {
       tabName = "home";
     }
     state.activeTab = tabName;
@@ -561,6 +570,7 @@
     $("screen-home").hidden = tabName !== "home";
     $("screen-network").hidden = tabName !== "network";
     $("screen-unifi").hidden = tabName !== "unifi";
+    $("screen-dtek").hidden = tabName !== "dtek";
     $("screen-admin").hidden = tabName !== "admin";
 
     document.querySelectorAll(".nav-tab").forEach((btn) => {
@@ -579,6 +589,7 @@
       if (state.activeTab === "home") renderHome();
       else if (state.activeTab === "network") renderNetwork();
       else if (state.activeTab === "unifi") renderUnifi();
+      else if (state.activeTab === "dtek") renderDtek();
       else if (state.activeTab === "admin") renderAdmin();
       return;
     }
@@ -1374,6 +1385,202 @@
     }
   }
 
+  // ---------------- Render: DTEK BOT ANALYTICS APP ----------------
+  const REGION_LABELS = {
+    kyiv: "🏙️ Киев (КЕМ)",
+    "kyiv-region": "🏡 Киевская обл. (КРЕМ)",
+    dnipro: "🏭 Днепр (ДНЕМ)",
+    odesa: "⚓ Одесса (ОЕМ)",
+  };
+
+  function renderDtek() {
+    const d = state.dtek;
+    const badge = $("dtek-status-badge");
+    const sub = $("dtek-summary-subtitle");
+    const clicksGrid = $("dtek-clicks-stats-grid");
+    const topActionsEl = $("dtek-top-actions-list");
+    const regionsEl = $("dtek-regions-list");
+    const usersEl = $("dtek-users-list");
+
+    if (!d || !d.configured) {
+      badge.className = "status-badge status-off";
+      badge.textContent = "Не настроен";
+      sub.textContent = "База данных ДТЕК не найдена";
+      topActionsEl.innerHTML = `<div class="item-meta">Укажите dtek.db_path в settings.yaml</div>`;
+      regionsEl.innerHTML = `<div class="item-meta">Нет данных</div>`;
+      usersEl.innerHTML = `<div class="item-meta">Нет данных</div>`;
+      return;
+    }
+
+    if (!d.ok) {
+      badge.className = "status-badge status-err";
+      badge.textContent = "Ошибка БД";
+      sub.textContent = d.error || "Ошибка чтения SQLite";
+      topActionsEl.innerHTML = `<div class="item-meta">⚠️ ${escapeHtml(d.error || "Ошибка")}</div>`;
+      regionsEl.innerHTML = `<div class="item-meta">⚠️ ${escapeHtml(d.error || "Ошибка")}</div>`;
+      usersEl.innerHTML = `<div class="item-meta">⚠️ ${escapeHtml(d.error || "Ошибка")}</div>`;
+      return;
+    }
+
+    const u = d.users || {};
+    const c = d.clicks || {};
+    const sl = d.slots || {};
+    const nf = d.notifications || {};
+    const cacheList = d.cache || [];
+
+    badge.className = "status-badge status-on";
+    badge.textContent = "SQLite WAL";
+    sub.textContent = `Активных: ${u.active || 0} • Новых за 24ч: +${u.new_24h || 0} (за 7д: +${u.new_7d || 0})`;
+
+    $("dtek-stat-total-users").textContent = (u.total || 0).toLocaleString("ru-RU");
+    $("dtek-stat-dau").textContent = (u.dau_24h || 0).toLocaleString("ru-RU");
+    $("dtek-stat-wau").textContent = (u.wau_7d || 0).toLocaleString("ru-RU");
+    $("dtek-stat-dual").textContent = (u.dual_slot || 0).toLocaleString("ru-RU");
+
+    // 1. Button / Command Clicks section
+    if (d.has_usage_events) {
+      clicksGrid.hidden = false;
+      $("dtek-stat-clicks-24h").textContent = (c.last_24h || 0).toLocaleString("ru-RU");
+      $("dtek-stat-clicks-7d").textContent = (c.last_7d || 0).toLocaleString("ru-RU");
+      $("dtek-stat-clicks-total").textContent = (c.total || 0).toLocaleString("ru-RU");
+      $("dtek-stat-notifs-24h").textContent = (nf.sent_24h || 0).toLocaleString("ru-RU");
+      $("dtek-clicks-subtitle").textContent = `Пушей отправлено: ${nf.sent_total || 0} всего (${nf.sent_7d || 0} за 7д)`;
+
+      const actions = c.top_actions || [];
+      if (!actions.length) {
+        topActionsEl.innerHTML = `<div class="item-meta">Нажатий пока не зафиксировано</div>`;
+      } else {
+        topActionsEl.innerHTML = actions
+          .map(
+            (a) => `
+            <div class="list-item">
+              <div class="list-item-row">
+                <div>
+                  <div class="item-title">
+                    <code>${escapeHtml(a.action)}</code>
+                    <span class="status-badge status-neutral">${escapeHtml(a.event_type)}</span>
+                  </div>
+                  <div class="item-meta">
+                    Уникальных юзеров: <strong>${a.unique_users || 0}</strong> • За 24ч: <strong>+${a.last_24h || 0}</strong>
+                  </div>
+                </div>
+                <span class="status-badge status-on">${(a.total || 0).toLocaleString("ru-RU")} нажат.</span>
+              </div>
+            </div>
+          `
+          )
+          .join("");
+      }
+    } else {
+      clicksGrid.hidden = true;
+      $("dtek-clicks-subtitle").textContent = `Отправлено пушей: ${nf.sent_24h || 0} за 24ч • ${nf.sent_7d || 0} за 7д • ${nf.sent_total || 0} всего`;
+      topActionsEl.innerHTML = `
+        <div class="list-item">
+          <div class="item-title">ℹ️ Счётчик нажатий (usage_events) ещё не активирован</div>
+          <div class="item-meta" style="margin-top:4px;">
+            Базовая статистика юзеров, слотов и пушей уже работает. После добавления middleware счётчика нажатий в <code>telegram_bot_dtek</code> здесь появится детальная разбивка по каждой команде и кнопке.
+          </div>
+        </div>
+      `;
+    }
+
+    // 2. Regions, Top Queues & Scraper Cache Health
+    const regs = sl.regions || [];
+    const queues = sl.top_queues || [];
+    const cacheByReg = {};
+    cacheList.forEach((item) => {
+      cacheByReg[item.region] = item;
+    });
+
+    $("dtek-regions-subtitle").textContent = `Всего слотов: ${sl.total || 0} у ${u.with_slots || 0} юзеров`;
+
+    const regBlocks = [];
+    if (regs.length > 0) {
+      regs.forEach((r) => {
+        const label = REGION_LABELS[r.region] || r.region;
+        const cInfo = cacheByReg[r.region];
+        const emBadge =
+          cInfo && cInfo.emergency
+            ? `<span class="status-badge status-err">🚨 Авария</span>`
+            : "";
+        const srcMeta = cInfo
+          ? `Кэш: ${escapeHtml(cInfo.source)} • Обновлён: ${escapeHtml(cInfo.updated_at)}`
+          : "Кэш ещё не загружен";
+        regBlocks.push(`
+          <div class="list-item">
+            <div class="list-item-row">
+              <div>
+                <div class="item-title">
+                  ${escapeHtml(label)}
+                  ${emBadge}
+                </div>
+                <div class="item-meta">${srcMeta}</div>
+              </div>
+              <span class="status-badge status-on">${r.slots} слот. (${r.users} юз.)</span>
+            </div>
+          </div>
+        `);
+      });
+    }
+
+    if (queues.length > 0) {
+      const pills = queues
+        .map(
+          (q) =>
+            `<span class="ssid-pill">${escapeHtml(q.region)} <strong>#${escapeHtml(q.subgroup)}</strong> (${q.subscribers})</span>`
+        )
+        .join("");
+      regBlocks.push(`
+        <div class="list-item">
+          <div class="sub-label" style="margin-bottom:6px;">Популярные очереди (группы)</div>
+          <div class="pill-row" style="margin-bottom:0;">${pills}</div>
+        </div>
+      `);
+    }
+
+    regionsEl.innerHTML =
+      regBlocks.length > 0
+        ? regBlocks.join("")
+        : `<div class="item-meta">Очереди ещё не настроены пользователями</div>`;
+
+    // 3. Recent / Top Users list
+    const rUsers = d.recent_users || [];
+    if (!rUsers.length) {
+      usersEl.innerHTML = `<div class="item-meta">Пользователей пока нет</div>`;
+    } else {
+      usersEl.innerHTML = rUsers
+        .map((usr) => {
+          const uname = usr.username ? `@${usr.username}` : `ID ${usr.user_id}`;
+          const slotsStr =
+            usr.slots && usr.slots.length > 0
+              ? usr.slots.join(" • ")
+              : "Слоты не выбраны";
+          const clicksBadge =
+            d.has_usage_events && usr.clicks_total > 0
+              ? `<span class="status-badge status-on">👆 ${usr.clicks_total}${usr.clicks_24h ? " (+" + usr.clicks_24h + " за 24ч)" : ""}</span>`
+              : "";
+          return `
+            <div class="list-item">
+              <div class="list-item-row">
+                <div>
+                  <div class="item-title">
+                    <span class="dot ${usr.active ? "dot-online" : "dot-offline"}"></span>
+                    ${escapeHtml(usr.first_name || "User")}
+                    <span class="item-meta">(${escapeHtml(uname)})</span>
+                  </div>
+                  <div class="item-meta" style="margin-top:4px;">
+                    📍 ${escapeHtml(slotsStr)} • 🕒 ${escapeHtml(usr.updated_at || "—")}
+                  </div>
+                </div>
+                ${clicksBadge}
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+  }
+
   // ---------------- Render: ADMIN APP ----------------
   function renderAdmin() {
     if (state.user) {
@@ -1551,6 +1758,7 @@
     $("screen-home").hidden = true;
     $("screen-network").hidden = true;
     $("screen-unifi").hidden = true;
+    $("screen-dtek").hidden = true;
     $("screen-admin").hidden = true;
     $("bottom-nav").hidden = true;
     $("refresh-btn").hidden = true;
@@ -1597,6 +1805,7 @@
     if (state.user.is_admin) {
       $("nav-tab-network").hidden = false;
       $("nav-tab-unifi").hidden = !(state.unifi && state.unifi.configured);
+      $("nav-tab-dtek").hidden = !(state.dtek && state.dtek.configured);
       $("nav-tab-admin").hidden = false;
       $("bottom-nav").hidden = false;
     } else {
@@ -1655,6 +1864,7 @@
         state.clients = snapshot.clients || [];
         state.wolHosts = snapshot.wol_hosts || [];
         state.unifi = snapshot.unifi || null;
+        state.dtek = snapshot.dtek || null;
         state.adminUsers = snapshot.admin_users || [];
         applyUserRoleAndBoot(initialTab);
 
