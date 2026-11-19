@@ -346,6 +346,7 @@ def encode_combined_snapshot_with_budget(
         snap_copy["dtek"] = {
             "configured": True,
             "ok": d_orig.get("ok", True),
+            "error": d_orig.get("error"),
             "has_usage_events": d_orig.get("has_usage_events", False),
             "users": d_orig.get("users"),
             "clicks": {
@@ -380,6 +381,7 @@ def encode_combined_snapshot_with_budget(
         snap_copy["dtek"] = {
             "configured": True,
             "ok": snap_copy["dtek"].get("ok", True),
+            "error": snap_copy["dtek"].get("error"),
             "has_usage_events": snap_copy["dtek"].get("has_usage_events", False),
             "users": snap_copy["dtek"].get("users"),
         }
